@@ -6,6 +6,7 @@ using ServerSync;
 using SkillManager;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using UnityEngine;
 
@@ -49,6 +50,9 @@ namespace BlacksmithingExpanded
         internal static ConfigEntry<float> cfg_XPPerSmelt;
         internal static ConfigEntry<float> cfg_XPPerRepair;
 
+        // embedded icon sprite cached
+        private static Sprite s_skillIcon;
+
         // Config helper that registers entries with ServerSync
         private ConfigEntry<T> AddConfig<T>(string group, string name, T value, string description, bool synchronized = true)
         {
@@ -62,19 +66,54 @@ namespace BlacksmithingExpanded
         {
             harmony = new Harmony(ModGUID);
 
-            // create/register skill via SkillManager (Skill ctor registers with SkillManager)
-            blacksmithSkill = new Skill("Blacksmithing", "smithing.png")
+            // Load embedded sprite from resources/icons/smithing.png (embedded resource)
+            try
             {
-                Configurable = true
-            };
-            blacksmithSkill.Description.English("Blacksmithing — craft better, last longer. Improves durability, damage and armor of crafted items and grants smelting bonuses.");
+                s_skillIcon = LoadEmbeddedSprite("smithing.png", 64, 64);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[BlacksmithingExpanded] Failed to load embedded sprite: {ex}");
+                s_skillIcon = null;
+            }
+
+            // create/register skill via SkillManager (Skill ctor registers with SkillManager)
+            // Use the Sprite overload so the internal SkillDef has the icon early.
+            try
+            {
+                if (s_skillIcon != null)
+                {
+                    blacksmithSkill = new Skill("Blacksmithing", s_skillIcon)
+                    {
+                        Configurable = true
+                    };
+                }
+                else
+                {
+                    // fallback to string constructor if sprite somehow unavailable (Skill has overload string->sprite lookup in some versions)
+                    blacksmithSkill = new Skill("Blacksmithing", "smithing.png")
+                    {
+                        Configurable = true
+                    };
+                }
+
+                // Provide readable localized name + description immediately
+                blacksmithSkill.Name.English("Blacksmithing");
+                blacksmithSkill.Description.English(
+                    "Craft better, last longer. Improves durability, damage, and armor of crafted items. Grants smelting and repair bonuses."
+                );
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[BlacksmithingExpanded] Failed to construct SkillManager skill: {ex}");
+            }
 
             // Config group
             string group = "Blacksmithing";
 
             // Config entries (server-synced)
-            cfg_SkillGainFactor = AddConfig(group, "Skill gain factor", blacksmithSkill.SkillGainFactor, "Rate at which you gain Blacksmithing XP.");
-            cfg_SkillEffectFactor = AddConfig(group, "Skill effect factor", blacksmithSkill.SkillEffectFactor, "Multiplier applied to all skill effects.");
+            cfg_SkillGainFactor = AddConfig(group, "Skill gain factor", blacksmithSkill?.SkillGainFactor ?? 1f, "Rate at which you gain Blacksmithing XP.");
+            cfg_SkillEffectFactor = AddConfig(group, "Skill effect factor", blacksmithSkill?.SkillEffectFactor ?? 1f, "Multiplier applied to all skill effects.");
 
             cfg_DurabilityPercentPer5Levels = AddConfig(group, "Durability % per 5 levels", 1f, "Percent added to base durability every 5 levels (cumulative).");
             cfg_DamagePercentPer10Levels = AddConfig(group, "Damage % per 10 levels", 1f, "Percent added to base damage every 10 levels (cumulative).");
@@ -95,10 +134,13 @@ namespace BlacksmithingExpanded
             cfg_XPPerRepair = AddConfig(group, "XP per repair", 0.30f, "Base XP granted when repairing an item.");
 
             // wire dynamic config changes to SkillManager skill fields
-            blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
-            blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
-            cfg_SkillGainFactor.SettingChanged += (_, _) => blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
-            cfg_SkillEffectFactor.SettingChanged += (_, _) => blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
+            if (blacksmithSkill != null)
+            {
+                blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
+                blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
+                cfg_SkillGainFactor.SettingChanged += (_, _) => blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
+                cfg_SkillEffectFactor.SettingChanged += (_, _) => blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
+            }
 
             // Harmony patches
             harmony.PatchAll();
@@ -108,6 +150,7 @@ namespace BlacksmithingExpanded
 
         private void OnDestroy()
         {
+            // unpatch only ours
             harmony?.UnpatchSelf();
         }
 
@@ -122,9 +165,8 @@ namespace BlacksmithingExpanded
                 var skills = player.GetComponent<Skills>();
                 if (skills == null) return 0;
 
-                // convert our skill name to Skills.SkillType via Skill.fromName
-                var skillType = Skill.fromName(blacksmithSkill.Name.Key);
-                // Skills.GetSkillLevel returns floored level already in Valheim's Skills.cs
+                // convert our skill name to Skills.SkillType via Skill.fromName using the literal we registered
+                var skillType = Skill.fromName("Blacksmithing");
                 float lvl = skills.GetSkillLevel(skillType);
                 return Mathf.FloorToInt(lvl);
             }
@@ -137,25 +179,25 @@ namespace BlacksmithingExpanded
 
         /// <summary>
         /// Give XP to player's Blacksmithing skill using SkillManager extension.
+        /// We hardcode the skill name "Blacksmithing" to avoid null-key problems during startup / localization.
         /// </summary>
         internal static void GiveBlacksmithingXP(Player player, float amount)
         {
-            if (player == null || amount <= 0f || blacksmithSkill == null) return;
+            if (player == null || amount <= 0f) return;
 
             try
             {
-                // Use the SkillManager extension method safely
-                SkillManager.SkillExtensions.RaiseSkill(
-                    player,
-                    blacksmithSkill.Name.Key,
-                    amount * cfg_SkillGainFactor.Value
-                );
+                // Multiply by configured SkillGainFactor (SkillManager uses skillDef.m_increseStep internally).
+                float adjusted = amount * cfg_SkillGainFactor.Value;
 
-                Debug.Log($"[BlacksmithingExpanded] {player.GetPlayerName()} gained {amount} Blacksmithing XP (x{cfg_SkillGainFactor.Value}).");
+                // Use SkillManager extension that accepts Character/Player; pass the hardcoded skill name string.
+                SkillManager.SkillExtensions.RaiseSkill(player, "Blacksmithing", adjusted);
+
+                Debug.Log($"[BlacksmithingExpanded] {player.GetPlayerName()} gained {adjusted} Blacksmithing XP (raw {amount}).");
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[BlacksmithingExpanded] Failed to raise skill XP for {player.GetPlayerName()}: {ex}");
+                Debug.LogError($"[BlacksmithingExpanded] Failed to raise skill XP for {player?.GetPlayerName()}: {ex}");
             }
         }
 
@@ -178,7 +220,7 @@ namespace BlacksmithingExpanded
                 var shared = item.m_shared;
                 float mult = GetDamageMultiplier(level);
 
-                // Apply multipliers safely
+                // Apply multipliers to the damage struct fields
                 shared.m_damages.m_blunt *= mult;
                 shared.m_damages.m_slash *= mult;
                 shared.m_damages.m_pierce *= mult;
@@ -249,6 +291,45 @@ namespace BlacksmithingExpanded
         // Harmony Patches
         // -----------------------
 
+        // Ensure the vanilla Skills list gets our skill icon and configured increase step (prevents UI NREs and shows icon).
+        [HarmonyPatch(typeof(Skills), nameof(Skills.Awake))]
+        private static class Patch_Skills_Awake_SetSkillDefIcon
+        {
+            private static void Postfix(Skills __instance)
+            {
+                try
+                {
+                    // Convert the registered skill name to a SkillType and patch any SkillDef that matches.
+                    var customSkillType = Skill.fromName("Blacksmithing");
+
+                    foreach (var def in __instance.m_skills)
+                    {
+                        if (def != null && def.m_skill == customSkillType)
+                        {
+                            if (s_skillIcon != null)
+                            {
+                                def.m_icon = s_skillIcon;
+                            }
+
+                            // keep skill gain factor in sync if config exists
+                            try
+                            {
+                                if (cfg_SkillGainFactor != null)
+                                {
+                                    def.m_increseStep = cfg_SkillGainFactor.Value;
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[BlacksmithingExpanded] Patch_Skills_Awake_SetSkillDefIcon error: {ex}");
+                }
+            }
+        }
+
         // 1) Modify crafted item stats and give XP when player crafts via InventoryGui.DoCrafting
         [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.DoCrafting))]
         public static class Patch_CraftedItem_AdjustStats
@@ -288,18 +369,13 @@ namespace BlacksmithingExpanded
         }
 
         // 2) Smelter: grant XP when player successfully adds ore to the smelter (filling action).
-        //    Patch the Smelter.OnAddOre method (returns bool success) - postfix runs after the method.
         [HarmonyPatch]
         public static class Patch_Smelter_OnAddOre_Postfix
         {
             static MethodInfo TargetMethod()
             {
-                // try direct method first (OnAddOre exists on Smelter in your pasted Smelter.cs)
                 var m = AccessTools.Method(typeof(Smelter), "OnAddOre", new Type[] { typeof(Switch), typeof(Humanoid), typeof(ItemDrop.ItemData) });
-                if (m != null) return m;
-
-                // fallback: try just name
-                return AccessTools.Method(typeof(Smelter), "OnAddOre");
+                return m ?? AccessTools.Method(typeof(Smelter), "OnAddOre");
             }
 
             static void Postfix(Smelter __instance, Switch sw, Humanoid user, ItemDrop.ItemData item, bool __result)
@@ -321,13 +397,12 @@ namespace BlacksmithingExpanded
                         float chance = GetChanceScaledWithLevel(cfg_SmelterSaveOreChanceAt100.Value, level);
                         if (UnityEngine.Random.value <= chance)
                         {
-                            // small native gain via SkillManager extension (explicit)
                             try
                             {
                                 var skills = player.GetComponent<Skills>();
                                 if (skills != null)
                                 {
-                                    SkillManager.SkillExtensions.RaiseSkill(skills, blacksmithSkill.Name.Key, 0.01f);
+                                    SkillManager.SkillExtensions.RaiseSkill(skills, "Blacksmithing", 0.01f);
                                 }
                             }
                             catch { }
@@ -436,6 +511,39 @@ namespace BlacksmithingExpanded
                 }
                 catch { }
             }
+        }
+
+        // -----------------------
+        // Embedded resource helpers (same pattern as Cooking mod)
+        // -----------------------
+        private static byte[] ReadEmbeddedFileBytes(string name)
+        {
+            using MemoryStream stream = new();
+            // Try full assembly namespace + ".icons." + name (common pattern)
+            var asm = Assembly.GetExecutingAssembly();
+            string baseName = asm.GetName().Name ?? "";
+            string resourceName = baseName + ".icons." + name;
+
+            var s = asm.GetManifestResourceStream(resourceName) ?? asm.GetManifestResourceStream("icons." + name) ?? asm.GetManifestResourceStream(name);
+            if (s == null)
+            {
+                throw new FileNotFoundException($"Embedded resource not found: tried '{resourceName}', 'icons.{name}', and '{name}'");
+            }
+            s.CopyTo(stream);
+            return stream.ToArray();
+        }
+
+        private static Texture2D loadTexture(string name)
+        {
+            Texture2D texture = new(2, 2);
+            texture.LoadImage(ReadEmbeddedFileBytes(name));
+            return texture;
+        }
+
+        private static Sprite LoadEmbeddedSprite(string name, int width, int height)
+        {
+            var tex = loadTexture("icons." + name);
+            return Sprite.Create(tex, new Rect(0, 0, width, height), Vector2.zero);
         }
     }
 }
