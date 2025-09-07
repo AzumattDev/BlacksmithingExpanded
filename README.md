@@ -1,3 +1,5 @@
+<p align="center"><img src="https://noobtrap.eu/images/crystallights/blacksmithexpandedheader.png" alt="BSHeader"></p>
+
 # 🔧 BlacksmithingExpanded
 
 **BlacksmithingExpanded** adds a skill-based blacksmithing system to Valheim, enhancing crafting, smelting, and coal production based on player experience. The more you forge, the better your results.
@@ -45,7 +47,7 @@ All features are fully configurable via BepInEx config files or server sync:
 
 ---
 
-## 💡 Philosophy
+## 💡 About
 
 This mod is designed to be immersive, fair, and multiplayer-safe — rewarding skilled blacksmiths with faster forge performance and better resource efficiency. It integrates seamlessly with Valheim’s existing systems while adding depth to crafting and resource management.
 
@@ -67,4 +69,11 @@ This mod is designed to be immersive, fair, and multiplayer-safe — rewarding s
 
 ---
 
-Craft with purpose. Smelt with pride. Let the forge remember your touch.
+
+<p align="center"><h2>For Questions or Comments find Gravebear in the Odin Plus Team on Discord:</h2></p>
+
+<p align="center"><a href="https://discord.gg/mbkPcvu9ax"><img src="https://i.imgur.com/Ji3u63C.png"></a></p>
+
+<p align="center">Visit my buymeacoffee for a free Admin craft Shark Hat and Tuna Sword!</p>
+ 
+<p align="center"><a href="https://www.buymeacoffee.com/Gravebear"><img src="https://noobtrap.eu/images/crystallights/GBSupporter.png"></a></p>
