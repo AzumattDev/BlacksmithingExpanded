@@ -33,6 +33,9 @@
     <Reference Include="BepInEx">
       <HintPath>$(GamePath)\BepInEx\core\BepInEx.dll</HintPath>
     </Reference>
+    <Reference Include="ItemDataManager">
+      <HintPath>Libs\ItemDataManager.dll</HintPath>
+    </Reference>
     <Reference Include="ServerSync">
       <HintPath>.\ServerSync.dll</HintPath>
     </Reference>
@@ -90,6 +93,7 @@
   <ItemGroup>
     <EmbeddedResource Include="icons\smithing.png" />
     <Content Include="ILRepack.targets" />
+    <Content Include="ItemDataManager.dll" />
     <Content Include="SkillManager.dll" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
