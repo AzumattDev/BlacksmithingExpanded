@@ -1,27 +1,29 @@
 <p align="center"><img src="https://noobtrap.eu/images/crystallights/blacksmithexpandedheader.png" alt="BSHeader"></p>
 
-# 🔧 BlacksmithingExpanded
-
-**BlacksmithingExpanded** adds a skill-based blacksmithing system to Valheim, enhancing crafting, smelting, and coal production based on player experience. The more you forge, the better your results.
+A modular, skill-driven enhancement system for Valheim that rewards crafting, repairing, and smelting with scalable stat bonuses, elemental infusions, and structure upgrades. Built for transparency, tweakability, and community-driven balance.
 
 ---
 
 ## 🛠️ Features
 
-- **Blacksmithing XP**  
-  Earn XP by crafting items, repairing "broken" gear, smelting ore, and feeding kilns.
+- **Blacksmithing XP System**  
+  Gain experience by crafting items, repairing gear, smelting ore, and feeding kilns.
 
-- **Tier Bonuses**  
-  Your blacksmithing level determines your tier, which boosts forge performance.
+- **Tier-Based Stat Scaling**  
+  Your blacksmithing level determines your stat tier, which boosts:
+  - Weapon damage (physical + elemental)
+  - Armor and shield block power
+  - Item durability
+  - Parry bonus
 
-- **Smelter Speed Boost**  
-  Smelters process ore faster when infused by a higher-tier blacksmith.
+- **Upgrade-Based Bonuses**  
+  Items gain additional stat bonuses based on their upgrade level (quality).
 
-- **Kiln Speed Boost**  
-  Kilns produce coal faster when fed by a skilled player.
+- **Elemental Infusion**  
+  At high levels, blacksmiths unlock elemental damage bonuses (fire, frost, lightning, poison) with configurable scaling and unlock thresholds.
 
-- **Ore Efficiency Chance**  
-  Higher-tier players have a chance to save ore during smelting.
+- **Smelter & Kiln Infusion**  
+  Structures infused by high-tier players process faster and may save resources.
 
 - **Inventory Repair Unlock**  
   Repair items directly from your inventory once you reach the required skill level.
@@ -33,47 +35,69 @@
 
 ## ⚙️ Configuration
 
-All features are fully configurable via BepInEx config files or server sync:
+Every mechanic is fully configurable via BepInEx config files or server sync. Highlights include:
 
-- `XPPerCraft` – XP gained per item crafted  
-- `XPPerSmelt` – XP gained per ore smelted or wood added to kiln  
-- `XPPerRepair` – XP gained per item repaired  
-- `TierInterval` – Levels required per tier (e.g. every 20 levels = new tier)  
-- `SmeltingSpeedBonusPerTier` – % faster smelting per tier  
-- `KilnSpeedBonusPerTier` – % faster coal production per tier  
-- `SmelterSaveOreChanceAt100` – Max chance to save ore at level 100  
-- `InventoryRepairUnlockLevel` – Skill level required to enable inventory repairs  
-- `InfusionExpireTime` – How long a smelter or kiln retains the contributor's tier bonus
+### 🔧 XP & Tiering
 
----
+- `XPPerCraft`, `XPPerSmelt`, `XPPerRepair` — XP gained per action  
+- `TierInterval`, `StatTierInterval`, `DurabilityTierInterval` — level thresholds for tier scaling  
+- `UpgradeTierPer25Levels` — extra upgrade tiers unlocked every 25 levels  
+- `MaxTierUnlockLevel` — level at which full master bonuses unlock  
 
-## 💡 About
+### ⚔️ Stat Scaling
 
-This mod is designed to be immersive, fair, and multiplayer-safe — rewarding skilled blacksmiths with faster forge performance and better resource efficiency. It integrates seamlessly with Valheim’s existing systems while adding depth to crafting and resource management.
+- `DamageBonusPerTier`, `ArmorBonusPerTier`, `DurabilityBonusPerTier`  
+- `StatBonusPerUpgrade`, `ArmorBonusPerUpgrade`, `DurabilityBonusPerUpgrade`  
+- `StatBonusMultiplierPerTier` — multiplier applied to stat bonus per tier  
+- `StatBonusCapPerType` — maximum value allowed per damage type  
+- `MaxStatTypesPerTier` — limits randomized damage types per tier  
+- `ArmorCap`, `MaxDurabilityCap` — hard caps for armor and durability  
+
+### 🛡️ Shield Bonuses
+
+- `TimedBlockBonusPerTier` — parry bonus added per stat tier  
+- `BlockPowerBonusPerUpgrade` — block power added per upgrade level  
+
+### 🔥 Elemental Control
+
+- `ElementalUnlockLevel` — minimum level required before elemental bonuses apply  
+- `ElementalBonusPerTier` — elemental damage added per stat tier  
+- `AlwaysAddElementalAtMax` — toggle bonus at level 100  
+- `FireBonusAtMax`, `FrostBonusAtMax`, `LightningBonusAtMax`, `PoisonBonusAtMax` — fixed bonuses at level 100  
+
+### 🔁 Smelting & Repair
+
+- `SmeltingSpeedBonusPerTier`, `KilnSpeedBonusPerTier`  
+- `SmelterSaveOreChanceAt100` — chance to save ore at level 100  
+- `InfusionExpireTime` — how long infusion bonuses last  
+- `EnableInventoryRepair`, `InventoryRepairUnlockLevel` — unlock repair from inventory  
 
 ---
 
 ## 🔗 Compatibility
 
 - Fully compatible with most crafting and skill mods  
-- No known conflicts with Blaxxun’s Blacksmithing mod — features stack independently - if used together you may have to set crafting xp to 0.
+- No known conflicts with Blaxxun’s Blacksmithing mod — features stack independently  
+- If used together, set crafting XP to 0 to avoid double gain  
 
 ---
 
 ## 📦 Manual Installation
 
-1. Install [BepInEx](https://valheim.thunderstore.io/package/denikson/BepInExPack_Valheim/)
-2. Download and place `BlacksmithingExpanded.dll` into your `BepInEx/plugins` folder
-3. Launch the game and configure settings via `BepInEx/config`
-
+1. Install [BepInEx](https://valheim.thunderstore.io/package/denikson/BepInExPack_Valheim/)  
+2. Place `BlacksmithingExpanded.dll` into your `BepInEx/plugins` folder  
+3. Launch the game and configure settings via `BepInEx/config`  
 
 ---
 
+## 💬 Support & Community
 
 <p align="center"><h2>For Questions or Comments find Gravebear in the Odin Plus Team on Discord:</h2></p>
 
 <p align="center"><a href="https://discord.gg/mbkPcvu9ax"><img src="https://i.imgur.com/Ji3u63C.png"></a></p>
 
 <p align="center">Visit my buymeacoffee for a free Admin craft Shark Hat and Tuna Sword!</p>
- 
+
 <p align="center"><a href="https://www.buymeacoffee.com/Gravebear"><img src="https://noobtrap.eu/images/crystallights/GBSupporter.png"></a></p>
+
+---
