@@ -788,4 +788,4 @@ namespace BlacksmithingExpanded
             harmony?.UnpatchSelf();
         }
     }
-                }
+}
