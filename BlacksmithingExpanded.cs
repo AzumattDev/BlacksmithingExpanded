@@ -75,6 +75,10 @@ namespace BlacksmithingExpanded
         internal static ConfigEntry<int> cfg_ElementalUnlockLevel;
         internal static ConfigEntry<float> cfg_ElementalBonusPerTier;
         internal static ConfigEntry<bool> cfg_ApplyUpgradeBonusAtTierZero;
+        internal static ConfigEntry<int> cfg_GearMilestoneInterval;
+        internal static ConfigEntry<float> cfg_GearBonusPerMilestone;
+        internal static ConfigEntry<float> cfg_GearUpgradeBonusPerMilestone;
+
 
 
         // XP config
@@ -177,6 +181,10 @@ namespace BlacksmithingExpanded
             cfg_ElementalUnlockLevel = AddConfig(group, "Elemental unlock level", 100, "Minimum blacksmithing level required before elemental bonuses are applied.");
             cfg_ElementalBonusPerTier = AddConfig(group, "Elemental bonus per tier", 2f, "Elemental damage added per stat tier, separate from physical bonuses.");
             cfg_ApplyUpgradeBonusAtTierZero = AddConfig(group, "Apply upgrade bonus at tier 0", false, "If false, upgrade-based stat bonuses are disabled until the player reaches stat tier 1.");
+            cfg_GearMilestoneInterval = AddConfig(group, "Gear bonus milestone interval", 20, "Skill levels required per milestone. Applies to armor, shields, and weapons.");
+            cfg_GearBonusPerMilestone = AddConfig(group, "Base gear bonus per milestone", 5f, "Flat bonus added to armor and damage per milestone.");
+            cfg_GearUpgradeBonusPerMilestone = AddConfig(group, "Upgrade gear bonus per milestone", 2f, "Extra bonus per upgrade level per milestone. Applies to armor, shields, and weapon damage.");
+
 
             // XP configs
             cfg_XPPerCraft = AddConfig(group, "XP per craft", 0.50f, "Base XP granted when crafting an item.");
@@ -287,14 +295,17 @@ namespace BlacksmithingExpanded
 
             int statTier = level / cfg_StatTierInterval.Value;
             int durabilityTier = level / cfg_DurabilityTierInterval.Value;
-            float bonusPerTier = cfg_DamageBonusPerTier.Value * cfg_StatBonusMultiplierPerTier.Value;
+            int milestoneCount = level / cfg_GearMilestoneInterval.Value;
 
-            float upgradeStatBonus = (statTier > 0 || cfg_ApplyUpgradeBonusAtTierZero.Value)
-                ? item.m_quality * cfg_StatBonusPerUpgrade.Value
-                : 0f;
+            float damageBonus = statTier * cfg_DamageBonusPerTier.Value * cfg_StatBonusMultiplierPerTier.Value
+                + milestoneCount * cfg_GearBonusPerMilestone.Value;
 
-            float armorBonus = (statTier * cfg_ArmorBonusPerTier.Value) +
-                ((statTier > 0 || cfg_ApplyUpgradeBonusAtTierZero.Value) ? item.m_quality * cfg_ArmorBonusPerUpgrade.Value : 0f);
+            float upgradeDamageBonus = (statTier > 0 || cfg_ApplyUpgradeBonusAtTierZero.Value ? item.m_quality * cfg_StatBonusPerUpgrade.Value : 0f)
+                + item.m_quality * milestoneCount * cfg_GearUpgradeBonusPerMilestone.Value;
+
+            float armorBonus = statTier * cfg_ArmorBonusPerTier.Value + milestoneCount * cfg_GearBonusPerMilestone.Value;
+            float upgradeArmorBonus = (statTier > 0 || cfg_ApplyUpgradeBonusAtTierZero.Value ? item.m_quality * cfg_ArmorBonusPerUpgrade.Value : 0f)
+                + item.m_quality * milestoneCount * cfg_GearUpgradeBonusPerMilestone.Value;
 
             // Reset to base
             item.m_shared.m_damages = baseDamage.Clone();
@@ -305,7 +316,7 @@ namespace BlacksmithingExpanded
                 {
                     if (baseValue > 0f)
                     {
-                        stat += statTier * bonusPerTier + upgradeStatBonus;
+                        stat += damageBonus + upgradeDamageBonus;
                         stat = Mathf.Min(stat, cfg_StatBonusCapPerType.Value);
                     }
                 }
@@ -321,7 +332,7 @@ namespace BlacksmithingExpanded
 
                 if (baseArmor > 0f)
                 {
-                    item.m_shared.m_armor = Mathf.RoundToInt(baseArmor + armorBonus + upgradeStatBonus);
+                    item.m_shared.m_armor = Mathf.RoundToInt(baseArmor + armorBonus + upgradeArmorBonus);
                     if (cfg_ArmorCap.Value > 0f)
                         item.m_shared.m_armor = Mathf.Min(item.m_shared.m_armor, cfg_ArmorCap.Value);
                 }
@@ -329,33 +340,32 @@ namespace BlacksmithingExpanded
                 if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shield)
                 {
                     if (item.m_shared.m_blockPower > 0f)
-                        item.m_shared.m_blockPower += armorBonus + upgradeStatBonus + item.m_quality * cfg_BlockPowerBonusPerUpgrade.Value;
+                        item.m_shared.m_blockPower += armorBonus + upgradeArmorBonus + item.m_quality * cfg_BlockPowerBonusPerUpgrade.Value;
 
                     if (item.m_shared.m_deflectionForce > 0f)
-                        item.m_shared.m_deflectionForce += armorBonus + upgradeStatBonus;
+                        item.m_shared.m_deflectionForce += armorBonus + upgradeArmorBonus;
 
                     if (item.m_shared.m_timedBlockBonus > 0f)
                         item.m_shared.m_timedBlockBonus += statTier * cfg_TimedBlockBonusPerTier.Value;
                 }
 
-                // Elemental infusion scaling with quality
                 if (level >= cfg_ElementalUnlockLevel.Value && cfg_AlwaysAddElementalAtMax.Value)
                 {
-                    float elementalBonus = statTier * cfg_ElementalBonusPerTier.Value + item.m_quality * cfg_ElementalBonusPerTier.Value;
+                    float elementalBonus = damageBonus + upgradeDamageBonus;
 
                     if (!item.m_customData.ContainsKey("ElementalInfusion"))
                     {
-                        var elementalOptions = new List<(string name, Action apply)>
+                        var elementalOptions = new List<(string name, Action)>
                 {
-                    ("Fire",      (Action)(() => item.m_shared.m_damages.m_fire      += elementalBonus)),
-                    ("Frost",     (Action)(() => item.m_shared.m_damages.m_frost     += elementalBonus)),
-                    ("Lightning", (Action)(() => item.m_shared.m_damages.m_lightning += elementalBonus)),
-                    ("Poison",    (Action)(() => item.m_shared.m_damages.m_poison    += elementalBonus)),
+                    ("Fire",      () => item.m_shared.m_damages.m_fire      += elementalBonus),
+                    ("Frost",     () => item.m_shared.m_damages.m_frost     += elementalBonus),
+                    ("Lightning", () => item.m_shared.m_damages.m_lightning += elementalBonus),
+                    ("Poison",    () => item.m_shared.m_damages.m_poison    += elementalBonus),
                 };
 
                         var rng = new System.Random();
                         var selected = elementalOptions[rng.Next(elementalOptions.Count)];
-                        selected.apply();
+                        selected.Item2();
                         item.m_customData["ElementalInfusion"] = selected.name;
 
                         Debug.Log($"[BlacksmithingExpanded] Infused {item.m_shared.m_name} with {selected.name} at level {level}");
@@ -377,32 +387,32 @@ namespace BlacksmithingExpanded
             }
             else
             {
-                var damageSetters = new List<(string name, Action apply)>
+                var damageSetters = new List<(string name, Action)>
         {
-            ("Blunt",     (Action)(() => item.m_shared.m_damages.m_blunt     += statTier * bonusPerTier + upgradeStatBonus)),
-            ("Slash",     (Action)(() => item.m_shared.m_damages.m_slash     += statTier * bonusPerTier + upgradeStatBonus)),
-            ("Pierce",    (Action)(() => item.m_shared.m_damages.m_pierce    += statTier * bonusPerTier + upgradeStatBonus)),
-            ("Fire",      (Action)(() => item.m_shared.m_damages.m_fire      += statTier * bonusPerTier + upgradeStatBonus)),
-            ("Frost",     (Action)(() => item.m_shared.m_damages.m_frost     += statTier * bonusPerTier + upgradeStatBonus)),
-            ("Lightning", (Action)(() => item.m_shared.m_damages.m_lightning += statTier * bonusPerTier + upgradeStatBonus)),
-            ("Poison",    (Action)(() => item.m_shared.m_damages.m_poison    += statTier * bonusPerTier + upgradeStatBonus)),
-            ("Spirit",    (Action)(() => item.m_shared.m_damages.m_spirit    += statTier * bonusPerTier + upgradeStatBonus)),
+            ("Blunt",     () => item.m_shared.m_damages.m_blunt     += damageBonus + upgradeDamageBonus),
+            ("Slash",     () => item.m_shared.m_damages.m_slash     += damageBonus + upgradeDamageBonus),
+            ("Pierce",    () => item.m_shared.m_damages.m_pierce    += damageBonus + upgradeDamageBonus),
+            ("Fire",      () => item.m_shared.m_damages.m_fire      += damageBonus + upgradeDamageBonus),
+            ("Frost",     () => item.m_shared.m_damages.m_frost     += damageBonus + upgradeDamageBonus),
+            ("Lightning", () => item.m_shared.m_damages.m_lightning += damageBonus + upgradeDamageBonus),
+            ("Poison",    () => item.m_shared.m_damages.m_poison    += damageBonus + upgradeDamageBonus),
+            ("Spirit",    () => item.m_shared.m_damages.m_spirit    += damageBonus + upgradeDamageBonus),
         };
 
                 var rng = new System.Random();
                 var selected = damageSetters.OrderBy(_ => rng.Next()).Take(Math.Min(cfg_MaxStatTypesPerTier.Value, damageSetters.Count)).ToList();
 
                 foreach (var entry in selected)
-                    entry.apply();
+                    entry.Item2();
 
-                item.m_shared.m_armor = Mathf.RoundToInt(baseArmor + armorBonus + upgradeStatBonus);
+                item.m_shared.m_armor = Mathf.RoundToInt(baseArmor + armorBonus + upgradeArmorBonus);
                 if (cfg_ArmorCap.Value > 0f)
                     item.m_shared.m_armor = Mathf.Min(item.m_shared.m_armor, cfg_ArmorCap.Value);
 
                 if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shield)
                 {
-                    item.m_shared.m_blockPower += armorBonus + upgradeStatBonus + item.m_quality * cfg_BlockPowerBonusPerUpgrade.Value;
-                    item.m_shared.m_deflectionForce += armorBonus + upgradeStatBonus;
+                    item.m_shared.m_blockPower += armorBonus + upgradeArmorBonus + item.m_quality * cfg_BlockPowerBonusPerUpgrade.Value;
+                    item.m_shared.m_deflectionForce += armorBonus + upgradeArmorBonus;
                     item.m_shared.m_timedBlockBonus += statTier * cfg_TimedBlockBonusPerTier.Value;
                 }
 
@@ -410,7 +420,6 @@ namespace BlacksmithingExpanded
                 Debug.Log($"[BlacksmithingExpanded] Boosted damage types: {boostedNames}");
             }
 
-            // Durability scaling
             if (!cfg_RespectOriginalDurability.Value || baseDurability > 0f)
             {
                 float durabilityBonus = (durabilityTier * cfg_DurabilityBonusPerTier.Value) + (item.m_quality * cfg_DurabilityBonusPerUpgrade.Value);
@@ -764,4 +773,4 @@ namespace BlacksmithingExpanded
             harmony?.UnpatchSelf();
         }
     }
-}
+        }
