@@ -40,7 +40,7 @@ namespace BlacksmithingExpanded
         // Config entries
         internal static ConfigEntry<float> cfg_SkillGainFactor;
         internal static ConfigEntry<float> cfg_SkillEffectFactor;
-        internal static ConfigEntry<int> cfg_TierInterval;
+        internal static ConfigEntry<int> cfg_InfusionTierInterval;
         internal static ConfigEntry<int> cfg_DamageBonusPerTier;
         internal static ConfigEntry<int> cfg_ArmorBonusPerTier;
         internal static ConfigEntry<int> cfg_DurabilityBonusPerTier;
@@ -53,6 +53,29 @@ namespace BlacksmithingExpanded
         internal static ConfigEntry<float> cfg_SmeltingSpeedBonusPerTier;
         internal static ConfigEntry<float> cfg_KilnSpeedBonusPerTier;
         internal static ConfigEntry<float> cfg_InfusionExpireTime;
+        internal static ConfigEntry<bool> cfg_RespectOriginalStats;
+        internal static ConfigEntry<float> cfg_FireBonusAtMax;
+        internal static ConfigEntry<float> cfg_FrostBonusAtMax;
+        internal static ConfigEntry<float> cfg_LightningBonusAtMax;
+        internal static ConfigEntry<float> cfg_PoisonBonusAtMax;
+        internal static ConfigEntry<bool> cfg_AlwaysAddElementalAtMax;
+        internal static ConfigEntry<int> cfg_StatTierInterval;
+        internal static ConfigEntry<int> cfg_DurabilityTierInterval;
+        internal static ConfigEntry<float> cfg_DurabilityBonusPerUpgrade;
+        internal static ConfigEntry<bool> cfg_RespectOriginalDurability;
+        internal static ConfigEntry<float> cfg_ArmorBonusPerUpgrade;
+        internal static ConfigEntry<float> cfg_MaxDurabilityCap;
+        internal static ConfigEntry<float> cfg_StatBonusPerUpgrade;
+        internal static ConfigEntry<int> cfg_MaxStatTypesPerTier;
+        internal static ConfigEntry<float> cfg_StatBonusMultiplierPerTier;
+        internal static ConfigEntry<float> cfg_StatBonusCapPerType;
+        internal static ConfigEntry<float> cfg_TimedBlockBonusPerTier;
+        internal static ConfigEntry<float> cfg_BlockPowerBonusPerUpgrade;
+        internal static ConfigEntry<float> cfg_ArmorCap;
+        internal static ConfigEntry<int> cfg_ElementalUnlockLevel;
+        internal static ConfigEntry<float> cfg_ElementalBonusPerTier;
+        internal static ConfigEntry<bool> cfg_ApplyUpgradeBonusAtTierZero;
+
 
         // XP config
         internal static ConfigEntry<float> cfg_XPPerCraft;
@@ -120,18 +143,41 @@ namespace BlacksmithingExpanded
             // Config entries
             cfg_SkillGainFactor = AddConfig(group, "Skill gain factor", blacksmithSkill?.SkillGainFactor ?? 1f, "Rate at which you gain Blacksmithing XP.");
             cfg_SkillEffectFactor = AddConfig(group, "Skill effect factor", blacksmithSkill?.SkillEffectFactor ?? 1f, "Multiplier applied to all skill effects.");
-            cfg_TierInterval = AddConfig(group, "Tier interval (levels)", 10, "Levels required per tier (e.g. 10 = one tier every 10 levels).");
-            cfg_DamageBonusPerTier = AddConfig(group, "Damage bonus per tier", 1, "Flat damage added to all damage types per tier.");
+            cfg_InfusionTierInterval = AddConfig(group, "Infusion tier interval", 10, "Levels required per infusion tier (e.g. 10 = one tier every 10 levels for smelters, kilns, and repairs)."); cfg_DamageBonusPerTier = AddConfig(group, "Damage bonus per tier", 1, "Flat damage added to all damage types per tier.");
             cfg_ArmorBonusPerTier = AddConfig(group, "Armor bonus per tier", 2, "Flat armor added per tier.");
             cfg_DurabilityBonusPerTier = AddConfig(group, "Durability bonus per tier", 50, "Flat durability added per tier.");
             cfg_UpgradeTierPer25Levels = AddConfig(group, "Extra upgrade tiers per 25 levels", 1, "Extra upgrade tiers unlocked every 25 levels.");
             cfg_MaxTierUnlockLevel = AddConfig(group, "Max tier unlock level", 100, "Level at which full 'master' benefits are unlocked.");
             cfg_ChanceExtraItemAt100 = AddConfig(group, "Chance to craft extra item at 100", 0.05f, "Chance at level 100 to produce an extra copy when crafting. Scales with level.");
             cfg_SmelterSaveOreChanceAt100 = AddConfig(group, "Smelter save ore chance at 100", 0.2f, "Chance at level 100 that ore is not consumed (scales with level).");
+            cfg_KilnSpeedBonusPerTier = AddConfig(group, "Kiln speed bonus per tier", 0.05f, "Kiln speed multiplier per blacksmithing tier. Example: 0.05 = +5% faster per tier.");
             cfg_EnableInventoryRepair = AddConfig(group, "Enable inventory repair", true, "Allow repairing items from inventory after reaching unlock level.");
             cfg_InventoryRepairUnlockLevel = AddConfig(group, "Inventory repair unlock level", 70, "Blacksmithing level required to repair items from inventory.");
             cfg_SmeltingSpeedBonusPerTier = AddConfig(group, "Smelting speed bonus per tier", 0.05f, "Smelting speed multiplier per blacksmithing tier. Example: 0.05 = +5% faster per tier.");
             cfg_InfusionExpireTime = AddConfig(group, "Infusion expire time (seconds)", 60f, "How long a smelter or kiln retains the contributor's tier bonus before it expires.");
+            cfg_RespectOriginalStats = AddConfig(group, "Respect original weapon stats", true, "If true, only scale existing weapon stats. Stats with zero or null values will not be modified.");
+            cfg_AlwaysAddElementalAtMax = AddConfig(group, "Add elemental bonus at level 100", true, "If true, adds elemental damage at level 100 even when RespectOriginalStats is enabled.");
+            cfg_FireBonusAtMax = AddConfig(group, "Fire bonus at level 100", 5f, "Amount of fire damage added at level 100.");
+            cfg_FrostBonusAtMax = AddConfig(group, "Frost bonus at level 100", 5f, "Amount of frost damage added at level 100.");
+            cfg_LightningBonusAtMax = AddConfig(group, "Lightning bonus at level 100", 5f, "Amount of lightning damage added at level 100.");
+            cfg_PoisonBonusAtMax = AddConfig(group, "Poison bonus at level 100", 5f, "Amount of poison damage added at level 100.");
+            cfg_StatTierInterval = AddConfig(group, "Stat tier interval", 25, "Levels required per stat tier (damage, armor, shield bonuses).");
+            cfg_DurabilityTierInterval = AddConfig(group, "Durability tier interval", 20, "Levels required per durability tier.");
+            cfg_DurabilityBonusPerUpgrade = AddConfig(group, "Durability bonus per upgrade level", 25f, "Extra durability added per item upgrade level (quality).");
+            cfg_RespectOriginalDurability = AddConfig(group, "Respect original durability", true, "If true, only boost durability if the base durability is greater than zero.");
+            cfg_ArmorBonusPerUpgrade = AddConfig(group, "Armor bonus per upgrade level", 2f, "Flat armor added per upgrade level (quality).");
+            cfg_MaxDurabilityCap = AddConfig(group, "Max durability cap", 2000f, "Maximum durability allowed after all bonuses. Set to 0 to disable cap.");
+            cfg_StatBonusPerUpgrade = AddConfig(group, "Stat bonus per upgrade level", 1f, "Flat stat bonus (damage and armor) added per item upgrade level.");
+            cfg_MaxStatTypesPerTier = AddConfig(group, "Max stat types per tier", 3, "Maximum number of damage types boosted per stat tier when randomizing.");
+            cfg_StatBonusMultiplierPerTier = AddConfig(group, "Stat bonus multiplier per tier", 1.0f, "Multiplier applied to stat bonus per tier for advanced scaling.");
+            cfg_StatBonusCapPerType = AddConfig(group, "Stat bonus cap per damage type", 100f, "Maximum value allowed for any single damage type after scaling.");
+            cfg_TimedBlockBonusPerTier = AddConfig(group, "Timed block bonus per tier", 0.05f, "Parry bonus added per stat tier for shields.");
+            cfg_BlockPowerBonusPerUpgrade = AddConfig(group, "Block power bonus per upgrade", 2f, "Flat block power added per upgrade level for shields.");
+            cfg_ArmorCap = AddConfig(group, "Armor cap", 300f, "Maximum armor value allowed after all bonuses. Set to 0 to disable.");
+            cfg_ElementalUnlockLevel = AddConfig(group, "Elemental unlock level", 100, "Minimum blacksmithing level required before elemental bonuses are applied.");
+            cfg_ElementalBonusPerTier = AddConfig(group, "Elemental bonus per tier", 2f, "Elemental damage added per stat tier, separate from physical bonuses.");
+            cfg_ApplyUpgradeBonusAtTierZero = AddConfig(group, "Apply upgrade bonus at tier 0", false, "If false, upgrade-based stat bonuses are disabled until the player reaches stat tier 1.");
+
             // XP configs
             cfg_XPPerCraft = AddConfig(group, "XP per craft", 0.50f, "Base XP granted when crafting an item.");
             cfg_XPPerSmelt = AddConfig(group, "XP per smelt", 0.75f, "Base XP granted when adding ore to smelter (filling).");
@@ -228,10 +274,6 @@ namespace BlacksmithingExpanded
                     int.TryParse(Value, out blacksmithLevel);
             }
         }
-
-        /// <summary>
-        /// Applies tier-based stat bonuses to the crafted item.
-        /// </summary>
         internal static void ApplyCraftedItemMultipliers(ItemDrop.ItemData item, int level)
         {
             if (item == null || item.m_shared == null || level <= 0) return;
@@ -243,68 +285,155 @@ namespace BlacksmithingExpanded
             HitData.DamageTypes baseDamage = baseDamageLookup[key].Clone();
             float baseDurability = baseDurabilityLookup[key];
 
-            int tiers = level / cfg_TierInterval.Value;
-            int bonusPerTier = cfg_DamageBonusPerTier.Value;
+            int statTier = level / cfg_StatTierInterval.Value;
+            int durabilityTier = level / cfg_DurabilityTierInterval.Value;
+            float bonusPerTier = cfg_DamageBonusPerTier.Value * cfg_StatBonusMultiplierPerTier.Value;
+
+            float upgradeStatBonus = (statTier > 0 || cfg_ApplyUpgradeBonusAtTierZero.Value)
+                ? item.m_quality * cfg_StatBonusPerUpgrade.Value
+                : 0f;
+
+            float armorBonus = (statTier * cfg_ArmorBonusPerTier.Value) +
+                ((statTier > 0 || cfg_ApplyUpgradeBonusAtTierZero.Value) ? item.m_quality * cfg_ArmorBonusPerUpgrade.Value : 0f);
 
             // Reset to base
             item.m_shared.m_damages = baseDamage.Clone();
 
-            // List of damage type setters
-            var damageSetters = new List<Action>
+            if (cfg_RespectOriginalStats.Value)
             {
-            () => item.m_shared.m_damages.m_blunt     += tiers * bonusPerTier,
-            () => item.m_shared.m_damages.m_slash     += tiers * bonusPerTier,
-            () => item.m_shared.m_damages.m_pierce    += tiers * bonusPerTier,
-            () => item.m_shared.m_damages.m_fire      += tiers * bonusPerTier,
-            () => item.m_shared.m_damages.m_frost     += tiers * bonusPerTier,
-            () => item.m_shared.m_damages.m_lightning += tiers * bonusPerTier,
-            () => item.m_shared.m_damages.m_poison    += tiers * bonusPerTier,
-            () => item.m_shared.m_damages.m_spirit    += tiers * bonusPerTier,
-            };
+                void ApplyStat(ref float stat, float baseValue)
+                {
+                    if (baseValue > 0f)
+                    {
+                        stat += statTier * bonusPerTier + upgradeStatBonus;
+                        stat = Mathf.Min(stat, cfg_StatBonusCapPerType.Value);
+                    }
+                }
 
-            // Shuffle and pick N random types
-            int typesToBoost = Math.Min(tiers, damageSetters.Count);
-            var rng = new System.Random();
-            var selected = damageSetters.OrderBy(_ => rng.Next()).Take(typesToBoost);
+                ApplyStat(ref item.m_shared.m_damages.m_blunt, baseDamage.m_blunt);
+                ApplyStat(ref item.m_shared.m_damages.m_slash, baseDamage.m_slash);
+                ApplyStat(ref item.m_shared.m_damages.m_pierce, baseDamage.m_pierce);
+                ApplyStat(ref item.m_shared.m_damages.m_fire, baseDamage.m_fire);
+                ApplyStat(ref item.m_shared.m_damages.m_frost, baseDamage.m_frost);
+                ApplyStat(ref item.m_shared.m_damages.m_lightning, baseDamage.m_lightning);
+                ApplyStat(ref item.m_shared.m_damages.m_poison, baseDamage.m_poison);
+                ApplyStat(ref item.m_shared.m_damages.m_spirit, baseDamage.m_spirit);
 
-            foreach (var apply in selected)
-                apply();
+                if (baseArmor > 0f)
+                {
+                    item.m_shared.m_armor = Mathf.RoundToInt(baseArmor + armorBonus + upgradeStatBonus);
+                    if (cfg_ArmorCap.Value > 0f)
+                        item.m_shared.m_armor = Mathf.Min(item.m_shared.m_armor, cfg_ArmorCap.Value);
+                }
 
-            item.m_shared.m_armor = Mathf.RoundToInt(baseArmor + (tiers * cfg_ArmorBonusPerTier.Value));
-            item.m_shared.m_maxDurability = baseDurability + (tiers * cfg_DurabilityBonusPerTier.Value);
-            item.m_durability = item.GetMaxDurability();
+                if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shield)
+                {
+                    if (item.m_shared.m_blockPower > 0f)
+                        item.m_shared.m_blockPower += armorBonus + upgradeStatBonus + item.m_quality * cfg_BlockPowerBonusPerUpgrade.Value;
 
-            Debug.Log($"[BlacksmithingExpanded] Applied tier {tiers} bonuses to {item.m_shared.m_name} with randomized damage types.");
-        }
-        internal static void ApplyRandomDamageBonuses(ItemDrop.ItemData item, int level)
+                    if (item.m_shared.m_deflectionForce > 0f)
+                        item.m_shared.m_deflectionForce += armorBonus + upgradeStatBonus;
+
+                    if (item.m_shared.m_timedBlockBonus > 0f)
+                        item.m_shared.m_timedBlockBonus += statTier * cfg_TimedBlockBonusPerTier.Value;
+                }
+
+                // Elemental infusion scaling with quality
+                if (level >= cfg_ElementalUnlockLevel.Value && cfg_AlwaysAddElementalAtMax.Value)
+                {
+                    float elementalBonus = statTier * cfg_ElementalBonusPerTier.Value + item.m_quality * cfg_ElementalBonusPerTier.Value;
+
+                    if (!item.m_customData.ContainsKey("ElementalInfusion"))
+                    {
+                        var elementalOptions = new List<(string name, Action apply)>
+                {
+                    ("Fire",      (Action)(() => item.m_shared.m_damages.m_fire      += elementalBonus)),
+                    ("Frost",     (Action)(() => item.m_shared.m_damages.m_frost     += elementalBonus)),
+                    ("Lightning", (Action)(() => item.m_shared.m_damages.m_lightning += elementalBonus)),
+                    ("Poison",    (Action)(() => item.m_shared.m_damages.m_poison    += elementalBonus)),
+                };
+
+                        var rng = new System.Random();
+                        var selected = elementalOptions[rng.Next(elementalOptions.Count)];
+                        selected.apply();
+                        item.m_customData["ElementalInfusion"] = selected.name;
+
+                        Debug.Log($"[BlacksmithingExpanded] Infused {item.m_shared.m_name} with {selected.name} at level {level}");
+                    }
+                    else
+                    {
+                        string type = item.m_customData["ElementalInfusion"];
+                        switch (type)
+                        {
+                            case "Fire": item.m_shared.m_damages.m_fire += elementalBonus; break;
+                            case "Frost": item.m_shared.m_damages.m_frost += elementalBonus; break;
+                            case "Lightning": item.m_shared.m_damages.m_lightning += elementalBonus; break;
+                            case "Poison": item.m_shared.m_damages.m_poison += elementalBonus; break;
+                        }
+
+                        Debug.Log($"[BlacksmithingExpanded] Reapplied elemental infusion: {type} at tier {statTier} (quality {item.m_quality})");
+                    }
+                }
+            }
+            else
+            {
+                var damageSetters = new List<(string name, Action apply)>
         {
-            if (item == null || item.m_shared == null || level <= 0) return;
-
-            int tiers = level / cfg_TierInterval.Value;
-            int bonusPerTier = cfg_DamageBonusPerTier.Value;
-
-            var damageSetters = new List<(string name, Action)>
-        {
-        ("Blunt",     () => item.m_shared.m_damages.m_blunt     += tiers * bonusPerTier),
-        ("Slash",     () => item.m_shared.m_damages.m_slash     += tiers * bonusPerTier),
-        ("Pierce",    () => item.m_shared.m_damages.m_pierce    += tiers * bonusPerTier),
-        ("Fire",      () => item.m_shared.m_damages.m_fire      += tiers * bonusPerTier),
-        ("Frost",     () => item.m_shared.m_damages.m_frost     += tiers * bonusPerTier),
-        ("Lightning", () => item.m_shared.m_damages.m_lightning += tiers * bonusPerTier),
-        ("Poison",    () => item.m_shared.m_damages.m_poison    += tiers * bonusPerTier),
-        ("Spirit",    () => item.m_shared.m_damages.m_spirit    += tiers * bonusPerTier),
+            ("Blunt",     (Action)(() => item.m_shared.m_damages.m_blunt     += statTier * bonusPerTier + upgradeStatBonus)),
+            ("Slash",     (Action)(() => item.m_shared.m_damages.m_slash     += statTier * bonusPerTier + upgradeStatBonus)),
+            ("Pierce",    (Action)(() => item.m_shared.m_damages.m_pierce    += statTier * bonusPerTier + upgradeStatBonus)),
+            ("Fire",      (Action)(() => item.m_shared.m_damages.m_fire      += statTier * bonusPerTier + upgradeStatBonus)),
+            ("Frost",     (Action)(() => item.m_shared.m_damages.m_frost     += statTier * bonusPerTier + upgradeStatBonus)),
+            ("Lightning", (Action)(() => item.m_shared.m_damages.m_lightning += statTier * bonusPerTier + upgradeStatBonus)),
+            ("Poison",    (Action)(() => item.m_shared.m_damages.m_poison    += statTier * bonusPerTier + upgradeStatBonus)),
+            ("Spirit",    (Action)(() => item.m_shared.m_damages.m_spirit    += statTier * bonusPerTier + upgradeStatBonus)),
         };
 
-            var rng = new System.Random();
-            var selected = damageSetters.OrderBy(_ => rng.Next()).Take(Math.Min(tiers, damageSetters.Count)).ToList();
+                var rng = new System.Random();
+                var selected = damageSetters.OrderBy(_ => rng.Next()).Take(Math.Min(cfg_MaxStatTypesPerTier.Value, damageSetters.Count)).ToList();
 
-            foreach (var (_, apply) in selected)
-                apply();
+                foreach (var entry in selected)
+                    entry.apply();
 
-            var boostedNames = string.Join(", ", selected.Select(s => s.name));
-            Debug.Log($"[BlacksmithingExpanded] Boosted damage types: {boostedNames}");
+                item.m_shared.m_armor = Mathf.RoundToInt(baseArmor + armorBonus + upgradeStatBonus);
+                if (cfg_ArmorCap.Value > 0f)
+                    item.m_shared.m_armor = Mathf.Min(item.m_shared.m_armor, cfg_ArmorCap.Value);
+
+                if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shield)
+                {
+                    item.m_shared.m_blockPower += armorBonus + upgradeStatBonus + item.m_quality * cfg_BlockPowerBonusPerUpgrade.Value;
+                    item.m_shared.m_deflectionForce += armorBonus + upgradeStatBonus;
+                    item.m_shared.m_timedBlockBonus += statTier * cfg_TimedBlockBonusPerTier.Value;
+                }
+
+                var boostedNames = string.Join(", ", selected.Select(s => s.name));
+                Debug.Log($"[BlacksmithingExpanded] Boosted damage types: {boostedNames}");
+            }
+
+            // Durability scaling
+            if (!cfg_RespectOriginalDurability.Value || baseDurability > 0f)
+            {
+                float durabilityBonus = (durabilityTier * cfg_DurabilityBonusPerTier.Value) + (item.m_quality * cfg_DurabilityBonusPerUpgrade.Value);
+                float finalDurability = baseDurability + durabilityBonus;
+
+                if (cfg_MaxDurabilityCap.Value > 0f)
+                    finalDurability = Mathf.Min(finalDurability, cfg_MaxDurabilityCap.Value);
+
+                item.m_shared.m_maxDurability = finalDurability;
+                item.m_durability = item.GetMaxDurability();
+
+                Debug.Log($"[BlacksmithingExpanded] Applied durability bonus: base={baseDurability}, tierBonus={durabilityTier * cfg_DurabilityBonusPerTier.Value}, upgradeBonus={item.m_quality * cfg_DurabilityBonusPerUpgrade.Value}, capped={cfg_MaxDurabilityCap.Value}");
+            }
+            else
+            {
+                item.m_shared.m_maxDurability = baseDurability;
+                item.m_durability = item.GetMaxDurability();
+
+                Debug.Log($"[BlacksmithingExpanded] Skipped durability boost for {item.m_shared.m_name} due to RespectOriginalDurability");
+            }
+
+            Debug.Log($"[BlacksmithingExpanded] Applied statTier={statTier}, durabilityTier={durabilityTier} to {item.m_shared.m_name} ({(cfg_RespectOriginalStats.Value ? "existing stat scaling" : "randomized damage types")}).");
         }
-
 
         /// <summary>
         /// Attach BlacksmithingData to the item, for persistent tooltip/stat display.
@@ -330,7 +459,6 @@ namespace BlacksmithingExpanded
         // -----------------------
         // Harmony patches (crafting, smelter, tooltip, repair)
         // -----------------------
-
         [HarmonyPatch(typeof(InventoryGui), "DoCrafting")]
         public static class Patch_Blacksmithing_Crafting
         {
@@ -339,9 +467,11 @@ namespace BlacksmithingExpanded
                 var player = Player.m_localPlayer;
                 if (player == null) return;
 
-                // Get the last item added to inventory
                 var inventory = player.GetInventory();
-                var craftedItem = player.GetInventory()?.GetAllItems().LastOrDefault();
+                if (inventory == null) return;
+
+                // Safely get the last item added (crafted or upgraded)
+                var craftedItem = inventory.GetAllItems().LastOrDefault();
                 if (craftedItem == null || craftedItem.m_shared == null) return;
 
                 int level = GetPlayerBlacksmithingLevel(player);
@@ -360,6 +490,8 @@ namespace BlacksmithingExpanded
                 {
                     TryGiveExtraItemToCrafter(craftedItem, player);
                 }
+
+                Debug.Log($"[BlacksmithingExpanded] Applied stats to crafted/upgraded item: {craftedItem.m_shared.m_name}");
             }
         }
 
@@ -367,19 +499,35 @@ namespace BlacksmithingExpanded
             typeof(ItemDrop.ItemData), typeof(int), typeof(bool), typeof(float), typeof(int))]
         public static class Patch_Blacksmithing_Tooltip
         {
-            public static void Postfix(ItemDrop.ItemData item, int qualityLevel, bool crafting, float worldLevel, int stackOverride, ref string __result)
+            public static void Postfix(ItemDrop.ItemData item, bool crafting, ref string __result)
             {
-                if (crafting && Player.m_localPlayer != null)
-                {
-                    __result += "\n<color=orange>Forged stats will vary based on blacksmithing tier</color>";
-                }
-                var data = item.Data()?.Get<BlacksmithingData>();
+                var data = item.Data().Get<BlacksmithingData>();
                 if (data != null && data.blacksmithLevel > 0)
                 {
-                    __result += $"\n<color=orange>Forged by level {data.blacksmithLevel} blacksmith</color>";
+                    // Always show the forged skill level
+                    __result += $"\n<color=orange>Forged at Blacksmithing {data.blacksmithLevel}</color>";
+
+                    // Show infusion if applied
+                    if (item.m_customData.TryGetValue("ElementalInfusion", out string infusionType))
+                    {
+                        __result += $"\n<color=#87CEEB>Elemental Infusion: {infusionType}</color>";
+                    }
+
+                    // Optional: show durability bonus
+                    float baseDurability = item.m_shared.m_maxDurability;
+                    if (baseDurability > 0 && data.blacksmithLevel >= BlacksmithingExpanded.cfg_DurabilityTierInterval.Value)
+                    {
+                        int durabilityTier = data.blacksmithLevel / BlacksmithingExpanded.cfg_DurabilityTierInterval.Value;
+                        float bonus = (durabilityTier * BlacksmithingExpanded.cfg_DurabilityBonusPerTier.Value) +
+                                      (item.m_quality * BlacksmithingExpanded.cfg_DurabilityBonusPerUpgrade.Value);
+
+                        if (bonus > 0)
+                            __result += $"\n<color=#90EE90>Durability Bonus: +{bonus:F0}</color>";
+                    }
                 }
             }
         }
+
 
         [HarmonyPatch(typeof(InventoryGui), "UpdateRecipe")]
         public static class Patch_Blacksmithing_RecipePreview
@@ -461,7 +609,7 @@ namespace BlacksmithingExpanded
         internal static int GetPlayerBlacksmithingTier(Player player)
         {
             int level = GetPlayerBlacksmithingLevel(player);
-            return level / cfg_TierInterval.Value;
+            return level / cfg_InfusionTierInterval.Value;
         }
         [HarmonyPatch(typeof(Smelter), "OnAddOre")]
         public static class Patch_Kiln_OnAddWood
@@ -544,7 +692,7 @@ namespace BlacksmithingExpanded
                 {
                     if (item?.m_shared?.m_maxDurability > 0 && item.m_durability < item.GetMaxDurability())
                     {
-                        int tiers = level / cfg_TierInterval.Value;
+                        int tiers = level / cfg_InfusionTierInterval.Value;
                         float bonusAmount = tiers * cfg_DurabilityBonusPerTier.Value;
                         item.m_durability = Mathf.Min(item.m_durability + bonusAmount, item.GetMaxDurability());
 
