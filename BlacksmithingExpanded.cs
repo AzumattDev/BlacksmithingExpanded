@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using LocalizationManager;
 using UnityEngine;
 
 namespace BlacksmithingExpanded
@@ -125,6 +126,7 @@ namespace BlacksmithingExpanded
 
         private void Awake()
         {
+            //Localizer.Load();
             harmony = new Harmony(ModGUID);
 
             // Load embedded sprite
@@ -157,9 +159,7 @@ namespace BlacksmithingExpanded
                 }
 
                 blacksmithSkill.Name.English("Blacksmithing");
-                blacksmithSkill.Description.English(
-                    "Craft better, last longer. Improves durability, damage, and armor of crafted items. Grants smelting and repair bonuses."
-                );
+                blacksmithSkill.Description.English("Craft better, last longer. Improves durability, damage, and armor of crafted items. Grants smelting and repair bonuses.");
             }
             catch (Exception ex)
             {
@@ -232,13 +232,13 @@ namespace BlacksmithingExpanded
 
             // Sync skill configs
             if (blacksmithSkill != null)
-               {
-                   blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
-                   blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
-                   cfg_SkillGainFactor.SettingChanged += (_, _) => blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
-                   cfg_SkillEffectFactor.SettingChanged += (_, _) => blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
-                }
-       
+            {
+                blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
+                blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
+                cfg_SkillGainFactor.SettingChanged += (_, _) => blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
+                cfg_SkillEffectFactor.SettingChanged += (_, _) => blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
+            }
+
             harmony.PatchAll();
             Logger.LogInfo($"{ModName} v{ModVersion} loaded.");
         }
@@ -263,9 +263,12 @@ namespace BlacksmithingExpanded
                 return 0;
             }
         }
+
         public static class CoroutineRunner
         {
-            private class CoroutineHost : MonoBehaviour { }
+            private class CoroutineHost : MonoBehaviour
+            {
+            }
 
             private static CoroutineHost host;
 
@@ -303,7 +306,7 @@ namespace BlacksmithingExpanded
             }
         }
 
-      //  internal static int GetExtraUpgradeTiers(int level) => (level / 25) * cfg_UpgradeTierPer25Levels.Value;
+        //  internal static int GetExtraUpgradeTiers(int level) => (level / 25) * cfg_UpgradeTierPer25Levels.Value;
         internal static float GetChanceScaledWithLevel(float maxChanceAt100, int level) => Mathf.Clamp01(maxChanceAt100 * (level / 100f));
 
         // -----------------------
@@ -321,12 +324,14 @@ namespace BlacksmithingExpanded
                     int.TryParse(Value, out blacksmithLevel);
             }
         }
+
         internal static void ApplyCraftedItemMultipliers(ItemDrop.ItemData item, int level)
         {
             if (item == null || item.m_shared == null || level <= 0) return;
 
             CacheBaseStats(item);
             string key = item.m_shared.m_name;
+            bool isWeapon = item.IsWeapon();
 
             float baseArmor = baseArmorLookup[key];
             HitData.DamageTypes baseDamage = baseDamageLookup[key].Clone();
@@ -344,27 +349,27 @@ namespace BlacksmithingExpanded
             // DAMAGE
             // -------------------
             float damageBonus = (statTier * cfg_DamageBonusPerTier.Value * cfg_StatBonusMultiplierPerTier.Value)
-                              + (milestoneCount * cfg_GearBonusPerMilestone.Value);
+                                + (milestoneCount * cfg_GearBonusPerMilestone.Value);
 
             float upgradeDamageBonus = 0f;
             if (cfg_ApplyUpgradeBonusAtTierZero.Value || statTier > 0)
             {
                 upgradeDamageBonus = (item.m_quality * cfg_StatBonusPerUpgrade.Value
-                                    + item.m_quality * milestoneCount * cfg_GearUpgradeBonusPerMilestone.Value)
-                                    * cfg_StatBonusMultiplierPerTier.Value;
+                                      + item.m_quality * milestoneCount * cfg_GearUpgradeBonusPerMilestone.Value)
+                                     * cfg_StatBonusMultiplierPerTier.Value;
             }
 
             // -------------------
             // ARMOR
             // -------------------
             float armorBonus = (statTier * cfg_ArmorBonusPerTier.Value)
-                             + (milestoneCount * cfg_GearBonusPerMilestone.Value);
+                               + (milestoneCount * cfg_GearBonusPerMilestone.Value);
 
             float upgradeArmorBonus = 0f;
             if (cfg_ApplyUpgradeBonusAtTierZero.Value || statTier > 0)
             {
                 upgradeArmorBonus = (item.m_quality * cfg_ArmorBonusPerUpgrade.Value
-                                   + item.m_quality * milestoneCount * cfg_GearUpgradeBonusPerMilestone.Value);
+                                     + item.m_quality * milestoneCount * cfg_GearUpgradeBonusPerMilestone.Value);
             }
 
             // Reset to base
@@ -406,7 +411,7 @@ namespace BlacksmithingExpanded
                     if (item.m_shared.m_blockPower > 0f)
                     {
                         item.m_shared.m_blockPower += (statTier * cfg_BlockPowerBonusPerTier.Value)
-                                                    + (item.m_quality * cfg_BlockPowerBonusPerUpgrade.Value);
+                                                      + (item.m_quality * cfg_BlockPowerBonusPerUpgrade.Value);
                     }
 
                     if (item.m_shared.m_deflectionForce > 0f)
@@ -417,17 +422,18 @@ namespace BlacksmithingExpanded
                     if (item.m_shared.m_timedBlockBonus > 0f)
                     {
                         item.m_shared.m_timedBlockBonus += (statTier * cfg_TimedBlockBonusPerTier.Value)
-                                                         + (item.m_quality * cfg_TimedBlockBonusPerUpgrade.Value);
+                                                           + (item.m_quality * cfg_TimedBlockBonusPerUpgrade.Value);
                     }
                 }
 
                 // -------------------
                 // ELEMENTAL BONUSES
                 // -------------------
+                
                 if (cappedLevel >= cfg_ElementalUnlockLevel.Value && cfg_AlwaysAddElementalAtMax.Value)
                 {
                     float infusionBonus = (statTier * cfg_ElementalBonusPerTier.Value)
-                                        + damageBonus + upgradeDamageBonus;
+                                          + damageBonus + upgradeDamageBonus;
 
                     if (cappedLevel >= 100)
                     {
@@ -438,34 +444,37 @@ namespace BlacksmithingExpanded
                         item.m_shared.m_damages.m_spirit += cfg_SpiritBonusAtMax.Value;
                     }
 
-                    if (!item.m_customData.ContainsKey("ElementalInfusion"))
+                    if (isWeapon)
                     {
-                        var options = new List<(string name, Action)>
-                {
-                    ("Fire",      () => item.m_shared.m_damages.m_fire      += infusionBonus),
-                    ("Frost",     () => item.m_shared.m_damages.m_frost     += infusionBonus),
-                    ("Lightning", () => item.m_shared.m_damages.m_lightning += infusionBonus),
-                    ("Poison",    () => item.m_shared.m_damages.m_poison    += infusionBonus),
-                    ("Spirit",    () => item.m_shared.m_damages.m_spirit    += infusionBonus),
-                };
-
-                        var rng = new System.Random();
-                        var selected = options[rng.Next(options.Count)];
-                        selected.Item2();
-                        item.m_customData["ElementalInfusion"] = selected.name;
-
-                        Debug.Log($"[BlacksmithingExpanded] Infused {item.m_shared.m_name} with {selected.name} (bonus={infusionBonus})");
-                    }
-                    else
-                    {
-                        string type = item.m_customData["ElementalInfusion"];
-                        switch (type)
+                        if (!item.m_customData.ContainsKey("ElementalInfusion"))
                         {
-                            case "Fire": item.m_shared.m_damages.m_fire += infusionBonus; break;
-                            case "Frost": item.m_shared.m_damages.m_frost += infusionBonus; break;
-                            case "Lightning": item.m_shared.m_damages.m_lightning += infusionBonus; break;
-                            case "Poison": item.m_shared.m_damages.m_poison += infusionBonus; break;
-                            case "Spirit": item.m_shared.m_damages.m_spirit += infusionBonus; break;
+                            var options = new List<(string name, Action)>
+                            {
+                                ("Fire", () => item.m_shared.m_damages.m_fire += infusionBonus),
+                                ("Frost", () => item.m_shared.m_damages.m_frost += infusionBonus),
+                                ("Lightning", () => item.m_shared.m_damages.m_lightning += infusionBonus),
+                                ("Poison", () => item.m_shared.m_damages.m_poison += infusionBonus),
+                                ("Spirit", () => item.m_shared.m_damages.m_spirit += infusionBonus),
+                            };
+
+                            var rng = new System.Random();
+                            var selected = options[rng.Next(options.Count)];
+                            selected.Item2();
+                            item.m_customData["ElementalInfusion"] = selected.name;
+
+                            Debug.Log($"[BlacksmithingExpanded] Infused {item.m_shared.m_name} with {selected.name} (bonus={infusionBonus})");
+                        }
+                        else
+                        {
+                            string type = item.m_customData["ElementalInfusion"];
+                            switch (type)
+                            {
+                                case "Fire": item.m_shared.m_damages.m_fire += infusionBonus; break;
+                                case "Frost": item.m_shared.m_damages.m_frost += infusionBonus; break;
+                                case "Lightning": item.m_shared.m_damages.m_lightning += infusionBonus; break;
+                                case "Poison": item.m_shared.m_damages.m_poison += infusionBonus; break;
+                                case "Spirit": item.m_shared.m_damages.m_spirit += infusionBonus; break;
+                            }
                         }
                     }
                 }
@@ -474,16 +483,16 @@ namespace BlacksmithingExpanded
             {
                 // Randomize damage types if not respecting base stats
                 var setters = new List<(string name, Action)>
-        {
-            ("Blunt",     () => item.m_shared.m_damages.m_blunt     += damageBonus + upgradeDamageBonus),
-            ("Slash",     () => item.m_shared.m_damages.m_slash     += damageBonus + upgradeDamageBonus),
-            ("Pierce",    () => item.m_shared.m_damages.m_pierce    += damageBonus + upgradeDamageBonus),
-            ("Fire",      () => item.m_shared.m_damages.m_fire      += damageBonus + upgradeDamageBonus),
-            ("Frost",     () => item.m_shared.m_damages.m_frost     += damageBonus + upgradeDamageBonus),
-            ("Lightning", () => item.m_shared.m_damages.m_lightning += damageBonus + upgradeDamageBonus),
-            ("Poison",    () => item.m_shared.m_damages.m_poison    += damageBonus + upgradeDamageBonus),
-            ("Spirit",    () => item.m_shared.m_damages.m_spirit    += damageBonus + upgradeDamageBonus),
-        };
+                {
+                    ("Blunt", () => item.m_shared.m_damages.m_blunt += damageBonus + upgradeDamageBonus),
+                    ("Slash", () => item.m_shared.m_damages.m_slash += damageBonus + upgradeDamageBonus),
+                    ("Pierce", () => item.m_shared.m_damages.m_pierce += damageBonus + upgradeDamageBonus),
+                    ("Fire", () => item.m_shared.m_damages.m_fire += damageBonus + upgradeDamageBonus),
+                    ("Frost", () => item.m_shared.m_damages.m_frost += damageBonus + upgradeDamageBonus),
+                    ("Lightning", () => item.m_shared.m_damages.m_lightning += damageBonus + upgradeDamageBonus),
+                    ("Poison", () => item.m_shared.m_damages.m_poison += damageBonus + upgradeDamageBonus),
+                    ("Spirit", () => item.m_shared.m_damages.m_spirit += damageBonus + upgradeDamageBonus),
+                };
 
                 var rng = new System.Random();
                 var selected = setters.OrderBy(_ => rng.Next()).Take(Math.Min(cfg_MaxStatTypesPerTier.Value, setters.Count)).ToList();
@@ -496,11 +505,11 @@ namespace BlacksmithingExpanded
                 if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shield)
                 {
                     item.m_shared.m_blockPower += (statTier * cfg_BlockPowerBonusPerTier.Value)
-                                                + (item.m_quality * cfg_BlockPowerBonusPerUpgrade.Value);
+                                                  + (item.m_quality * cfg_BlockPowerBonusPerUpgrade.Value);
 
                     item.m_shared.m_deflectionForce += armorBonus + upgradeArmorBonus;
                     item.m_shared.m_timedBlockBonus += (statTier * cfg_TimedBlockBonusPerTier.Value)
-                                                     + (item.m_quality * cfg_TimedBlockBonusPerUpgrade.Value);
+                                                       + (item.m_quality * cfg_TimedBlockBonusPerUpgrade.Value);
                 }
 
                 Debug.Log($"[BlacksmithingExpanded] Randomized boost: {string.Join(", ", selected.Select(s => s.name))}");
@@ -512,7 +521,7 @@ namespace BlacksmithingExpanded
             if (!cfg_RespectOriginalDurability.Value || baseDurability > 0f)
             {
                 float durabilityBonus = (durabilityTier * cfg_DurabilityBonusPerTier.Value)
-                                      + (item.m_quality * cfg_DurabilityBonusPerUpgrade.Value);
+                                        + (item.m_quality * cfg_DurabilityBonusPerUpgrade.Value);
 
                 float finalDurability = baseDurability + durabilityBonus;
                 if (cfg_MaxDurabilityCap.Value > 0f)
@@ -553,6 +562,7 @@ namespace BlacksmithingExpanded
             // Mirror into Valheim’s persistent customData
             item.m_customData["BlacksmithingLevel"] = level.ToString();
         }
+
         internal static int GetBlacksmithingLevel(ItemDrop.ItemData item)
         {
             if (item == null) return 0;
@@ -575,7 +585,7 @@ namespace BlacksmithingExpanded
         // -----------------------
         // Harmony patches (crafting, smelter, tooltip, repair)
         // -----------------------
-        [HarmonyPatch(typeof(InventoryGui), "DoCrafting")]
+        [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.DoCrafting))]
         public static class Patch_Blacksmithing_Crafting
         {
             static void Postfix(InventoryGui __instance)
@@ -592,27 +602,28 @@ namespace BlacksmithingExpanded
 
                 int level = GetPlayerBlacksmithingLevel(player);
                 if (level <= 0) return;
-
-                CoroutineRunner.RunLater(() =>
+                if (craftedItem.IsWeapon() || craftedItem.IsEquipable())
                 {
-                    ApplyCraftedItemMultipliers(craftedItem, level);
-                    AttachBlacksmithingData(craftedItem, level);
-                }, 0.1f);
+                    CoroutineRunner.RunLater(() =>
+                    {
+                        ApplyCraftedItemMultipliers(craftedItem, level);
+                        AttachBlacksmithingData(craftedItem, level);
+                    }, 0.1f);
 
-                GiveBlacksmithingXP(player, cfg_XPPerCraft.Value);
+                    GiveBlacksmithingXP(player, cfg_XPPerCraft.Value);
 
-                float chance = GetChanceScaledWithLevel(cfg_ChanceExtraItemAt100.Value, level);
-                if (UnityEngine.Random.value <= chance)
-                {
-                    TryGiveExtraItemToCrafter(craftedItem, player);
+                    float chance = GetChanceScaledWithLevel(cfg_ChanceExtraItemAt100.Value, level);
+                    if (UnityEngine.Random.value <= chance)
+                    {
+                        TryGiveExtraItemToCrafter(craftedItem, player);
+                    }
+
+                    Debug.Log($"[BlacksmithingExpanded] Applied stats to crafted/upgraded item: {craftedItem.m_shared.m_name}");
                 }
-
-                Debug.Log($"[BlacksmithingExpanded] Applied stats to crafted/upgraded item: {craftedItem.m_shared.m_name}");
             }
         }
 
-        [HarmonyPatch(typeof(ItemDrop.ItemData), nameof(ItemDrop.ItemData.GetTooltip),
-            typeof(ItemDrop.ItemData), typeof(int), typeof(bool), typeof(float), typeof(int))]
+        [HarmonyPatch(typeof(ItemDrop.ItemData), nameof(ItemDrop.ItemData.GetTooltip), typeof(ItemDrop.ItemData), typeof(int), typeof(bool), typeof(float), typeof(int))]
         public static class Patch_Blacksmithing_Tooltip
         {
             public static void Postfix(ItemDrop.ItemData item, bool crafting, ref string __result)
@@ -746,6 +757,7 @@ namespace BlacksmithingExpanded
             int level = GetPlayerBlacksmithingLevel(player);
             return level / cfg_InfusionTierInterval.Value;
         }
+
         [HarmonyPatch(typeof(Smelter), "OnAddOre")]
         public static class Patch_Kiln_OnAddWood
         {
@@ -843,9 +855,11 @@ namespace BlacksmithingExpanded
                         return false; // Stop after one repair
                     }
                 }
+
                 return true;
             }
         }
+
         private static void CacheBaseStats(ItemDrop.ItemData item)
         {
             string key = item.m_shared.m_name;
@@ -892,11 +906,6 @@ namespace BlacksmithingExpanded
             Texture2D tex = new Texture2D(0, 0);
             tex.LoadImage(bytes);
             return Sprite.Create(tex, new Rect(0, 0, width, height), Vector2.zero);
-        }
-
-        private void OnDestroy()
-        {
-            harmony?.UnpatchSelf();
         }
     }
 }
