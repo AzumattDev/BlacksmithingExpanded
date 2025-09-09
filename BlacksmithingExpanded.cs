@@ -541,21 +541,37 @@ namespace BlacksmithingExpanded
         internal static void AttachBlacksmithingData(ItemDrop.ItemData item, int level)
         {
             if (item == null) return;
-            var dataManager = item.Data();
-            if (dataManager == null)
+
+            // Save into ItemDataManager runtime object
+            var data = item.Data().Add<BlacksmithingData>();
+            if (data != null)
             {
-                Debug.LogWarning("[BlacksmithingExpanded] item.Data() returned null.");
-                return;
+                data.blacksmithLevel = level;
+                data.Save();
             }
-            var data = dataManager.Add<BlacksmithingData>();
-            if (data == null)
-            {
-               // Debug.LogWarning("[BlacksmithingExpanded] Failed to attach BlacksmithingData.");
-                return;
-            }
-            data.blacksmithLevel = level;
-            data.Save();
+
+            // Mirror into Valheim’s persistent customData
+            item.m_customData["BlacksmithingLevel"] = level.ToString();
         }
+        internal static int GetBlacksmithingLevel(ItemDrop.ItemData item)
+        {
+            if (item == null) return 0;
+
+            // ItemDataManager runtime lookup
+            var data = item.Data().Get<BlacksmithingData>();
+            if (data != null && data.blacksmithLevel > 0)
+                return data.blacksmithLevel;
+
+            // Fallback: persistent dictionary
+            if (item.m_customData.TryGetValue("BlacksmithingLevel", out string stored))
+            {
+                if (int.TryParse(stored, out int parsed))
+                    return parsed;
+            }
+
+            return 0;
+        }
+
         // -----------------------
         // Harmony patches (crafting, smelter, tooltip, repair)
         // -----------------------
@@ -601,12 +617,26 @@ namespace BlacksmithingExpanded
         {
             public static void Postfix(ItemDrop.ItemData item, bool crafting, ref string __result)
             {
+                if (item == null) return;
+
+                // Try runtime data first
                 var data = item.Data().Get<BlacksmithingData>();
-                if (data != null && data.blacksmithLevel > 0)
+                int level = (data != null && data.blacksmithLevel > 0)
+                    ? data.blacksmithLevel
+                    : 0;
+
+                // Fallback: persistent storage
+                if (level == 0 && item.m_customData.TryGetValue("BlacksmithingLevel", out string stored))
+                {
+                    if (int.TryParse(stored, out int parsed))
+                        level = parsed;
+                }
+
+                if (level > 0)
                 {
                     // Show blacksmithing level if enabled
                     if (BlacksmithingExpanded.cfg_ShowBlacksmithLevelInTooltip.Value)
-                        __result += $"\n<color=orange>Forged at Blacksmithing {data.blacksmithLevel}</color>";
+                        __result += $"\n<color=orange>Forged at Blacksmithing {level}</color>";
 
                     // Show infusion if enabled and applied
                     if (BlacksmithingExpanded.cfg_ShowInfusionInTooltip.Value &&
@@ -619,9 +649,9 @@ namespace BlacksmithingExpanded
                     if (BlacksmithingExpanded.cfg_ShowDurabilityBonusInTooltip.Value)
                     {
                         float baseDurability = item.m_shared.m_maxDurability;
-                        if (baseDurability > 0 && data.blacksmithLevel >= BlacksmithingExpanded.cfg_DurabilityTierInterval.Value)
+                        if (baseDurability > 0 && level >= BlacksmithingExpanded.cfg_DurabilityTierInterval.Value)
                         {
-                            int durabilityTier = data.blacksmithLevel / BlacksmithingExpanded.cfg_DurabilityTierInterval.Value;
+                            int durabilityTier = level / BlacksmithingExpanded.cfg_DurabilityTierInterval.Value;
                             float bonus = (durabilityTier * BlacksmithingExpanded.cfg_DurabilityBonusPerTier.Value) +
                                           (item.m_quality * BlacksmithingExpanded.cfg_DurabilityBonusPerUpgrade.Value);
 
@@ -632,6 +662,7 @@ namespace BlacksmithingExpanded
                 }
             }
         }
+
 
         [HarmonyPatch(typeof(InventoryGui), "UpdateRecipe")]
         public static class Patch_Blacksmithing_RecipePreview
