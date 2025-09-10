@@ -20,7 +20,7 @@ namespace BlacksmithingExpanded
     public class BlacksmithingExpanded : BaseUnityPlugin
     {
         internal const string ModName = "Blacksmithing Expanded";
-        internal const string ModVersion = "1.0.0";
+        internal const string ModVersion = "1.0.1";
         internal const string ModGUID = "org.bepinex.plugins.blacksmithingexpanded";
 
         private Harmony harmony;
