@@ -1,0 +1,1114 @@
+﻿using BepInEx;
+using BepInEx.Configuration;
+using HarmonyLib;
+using JetBrains.Annotations;
+using ServerSync;
+using SkillManager;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using UnityEngine;
+
+namespace BlacksmithingExpanded
+{
+    [BepInPlugin(ModGUID, ModName, ModVersion)]
+    public class BlacksmithingExpanded : BaseUnityPlugin
+    {
+        internal const string ModName = "Blacksmithing Expanded";
+        internal const string ModVersion = "1.0.0";
+        internal const string ModGUID = "org.bepinex.plugins.blacksmithingexpanded";
+
+        private Harmony harmony;
+
+        private static readonly ConfigSync configSync = new(ModGUID)
+        {
+            DisplayName = ModName,
+            CurrentVersion = ModVersion,
+            MinimumRequiredVersion = ModVersion,
+            ModRequired = true
+        };
+
+        internal static Skill blacksmithSkill;
+
+        // Base stat cache - single source of truth
+        private static readonly Dictionary<string, ItemBaseStats> baseStatsCache = new();
+
+        // Workstation infusions
+        internal static Dictionary<ZDOID, WorkstationInfusion> smelterInfusions = new();
+        internal static Dictionary<ZDOID, WorkstationInfusion> kilnInfusions = new();
+        private static readonly Dictionary<ZDOID, float> originalSmelterSpeeds = new();
+        private static readonly Dictionary<ZDOID, float> originalKilnSpeeds = new();
+
+        // Config entries (keeping your existing structure)
+        internal static ConfigEntry<float> cfg_SkillGainFactor;
+        internal static ConfigEntry<float> cfg_SkillEffectFactor;
+        internal static ConfigEntry<int> cfg_InfusionTierInterval;
+        internal static ConfigEntry<float> cfg_ChanceExtraItemAt100;
+        internal static ConfigEntry<float> cfg_SmelterSaveOreChanceAt100;
+        internal static ConfigEntry<bool> cfg_EnableInventoryRepair;
+        internal static ConfigEntry<int> cfg_InventoryRepairUnlockLevel;
+        internal static ConfigEntry<float> cfg_SmeltingSpeedBonusPerTier;
+        internal static ConfigEntry<float> cfg_KilnSpeedBonusPerTier;
+        internal static ConfigEntry<float> cfg_InfusionExpireTime;
+        internal static ConfigEntry<bool> cfg_ShowBlacksmithLevelInTooltip;
+        internal static ConfigEntry<bool> cfg_ShowInfusionInTooltip;
+        internal static ConfigEntry<float> cfg_FirstCraftBonusXP;
+
+        // Durability
+        internal static ConfigEntry<int> cfg_DurabilityTierInterval;
+        internal static ConfigEntry<float> cfg_DurabilityBonusPerTier;
+        internal static ConfigEntry<float> cfg_DurabilityBonusPerUpgrade;
+        internal static ConfigEntry<bool> cfg_RespectOriginalDurability;
+        internal static ConfigEntry<float> cfg_MaxDurabilityCap;
+
+        // Armor & Weapons
+        internal static ConfigEntry<int> cfg_StatTierInterval;
+        internal static ConfigEntry<float> cfg_ArmorBonusPerTier;
+        internal static ConfigEntry<float> cfg_ArmorBonusPerUpgrade;
+        internal static ConfigEntry<float> cfg_ArmorCap;
+        internal static ConfigEntry<int> cfg_DamageBonusPerTier;
+        internal static ConfigEntry<float> cfg_StatBonusPerUpgrade;
+
+        // Elemental
+        internal static ConfigEntry<bool> cfg_AlwaysAddElementalAtMax;
+        internal static ConfigEntry<int> cfg_ElementalUnlockLevel;
+        internal static ConfigEntry<float> cfg_ElementalBonusPerTier;
+
+        // Shields
+        internal static ConfigEntry<float> cfg_TimedBlockBonusPerTier;
+        internal static ConfigEntry<float> cfg_TimedBlockBonusPerUpgrade;
+        internal static ConfigEntry<float> cfg_BlockPowerBonusPerTier;
+        internal static ConfigEntry<float> cfg_BlockPowerBonusPerUpgrade;
+
+        // XP
+        internal static ConfigEntry<float> cfg_XPPerCraft;
+        internal static ConfigEntry<float> cfg_XPPerSmelt;
+        internal static ConfigEntry<float> cfg_XPPerRepair;
+        internal static ConfigEntry<float> cfg_XPPerUpgrade;
+
+        private static Sprite s_skillIcon;
+
+        // Data structures for clean organization
+        private struct ItemBaseStats
+        {
+            public float armor;
+            public HitData.DamageTypes damages;
+            public float durability;
+            public List<HitData.DamageModPair> resistances;
+        }
+
+        public class WorkstationInfusion
+        {
+            public int tier;
+            public float timestamp;
+        }
+
+        // Simplified item data for network sync
+        [Serializable]
+        private class BlacksmithingItemData
+        {
+            public int level;
+            public string infusion = "";
+            public float baseDurability;
+            public float maxDurability;
+            public float armorBonus;
+            public DamageDeltas damageDeltas = new DamageDeltas();
+        }
+
+        [Serializable]
+        private class DamageDeltas
+        {
+            public float blunt, slash, pierce, fire, frost, lightning, poison, spirit;
+        }
+
+        private ConfigEntry<T> AddConfig<T>(string group, string name, T value, string description, bool sync = true)
+        {
+            var entry = Config.Bind(group, name, value, new ConfigDescription(description));
+            var syncEntry = configSync.AddConfigEntry(entry);
+            syncEntry.SynchronizedConfig = sync;
+            return entry;
+        }
+
+        private void Awake()
+        {
+            harmony = new Harmony(ModGUID);
+
+            // Load skill icon
+            try
+            {
+                s_skillIcon = LoadEmbeddedSprite("smithing.png", 64, 64);
+                if (s_skillIcon == null)
+                    throw new Exception("Failed to load embedded sprite: smithing.png");
+
+                blacksmithSkill = new Skill("Blacksmithing", s_skillIcon)
+                {
+                    Configurable = true
+                };
+                blacksmithSkill.Name.English("Blacksmithing");
+                blacksmithSkill.Description.English("Craft better, last longer. Improves durability, damage, and armor of crafted items.");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[BlacksmithingExpanded] Skill setup failed: {ex}");
+            }
+            // Setup configs (simplified - keeping your key ones)
+            SetupConfigs();
+
+            // Sync skill configs
+            if (blacksmithSkill != null)
+            {
+                blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
+                blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
+                cfg_SkillGainFactor.SettingChanged += (_, _) => blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
+                cfg_SkillEffectFactor.SettingChanged += (_, _) => blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
+            }
+
+            harmony.PatchAll();
+            Logger.LogInfo($"{ModName} v{ModVersion} loaded.");
+        }
+
+        private void SetupConfigs()
+        {
+            // General
+            cfg_SkillGainFactor = AddConfig("General", "Skill gain factor", 1f, "Rate at which you gain Blacksmithing XP");
+            cfg_SkillEffectFactor = AddConfig("General", "Skill effect factor", 1f, "Multiplier applied to all skill effects");
+            cfg_InfusionTierInterval = AddConfig("General", "Workstation infusion milestone interval", 10, "Levels per infusion tier");
+            cfg_SmeltingSpeedBonusPerTier = AddConfig("General", "Smelting speed bonus per tier", 0.05f, "Speed bonus per tier");
+            cfg_KilnSpeedBonusPerTier = AddConfig("General", "Kiln speed bonus per tier", 0.05f, "Speed bonus per tier");
+            cfg_InfusionExpireTime = AddConfig("General", "Infusion expire time", 60f, "How long infusions last (seconds)");
+            cfg_ChanceExtraItemAt100 = AddConfig("General", "Extra item chance at 100", 0.05f, "Chance for extra item at level 100");
+            cfg_SmelterSaveOreChanceAt100 = AddConfig("General", "Ore save chance at 100", 0.2f, "Chance to save ore at level 100");
+            cfg_EnableInventoryRepair = AddConfig("General", "Enable inventory repair", true, "Allow repairing from inventory");
+            cfg_InventoryRepairUnlockLevel = AddConfig("General", "Inventory repair unlock level", 70, "Level for inventory repairs");
+
+            // XP
+            cfg_XPPerCraft = AddConfig("XP", "XP per craft", 5f, "Base XP when crafting");
+            cfg_XPPerSmelt = AddConfig("XP", "XP per smelt", 0.75f, "Base XP when smelting");
+            cfg_XPPerRepair = AddConfig("XP", "XP per repair", 1f, "Base XP when repairing");
+            cfg_XPPerUpgrade = AddConfig("XP", "XP per upgrade", 5f, "XP for upgrading");
+            cfg_FirstCraftBonusXP = AddConfig("XP", "First craft bonus XP", 25f, "Bonus XP for first craft of item type");
+
+            // Tooltips
+            cfg_ShowBlacksmithLevelInTooltip = AddConfig("Tooltip", "Show level in tooltip", true, "Show blacksmith level in tooltip");
+            cfg_ShowInfusionInTooltip = AddConfig("Tooltip", "Show infusion in tooltip", false, "Show elemental infusion in tooltip");
+
+            // Stats
+            cfg_DurabilityTierInterval = AddConfig("Durability", "Durability tier interval", 10, "Levels per durability tier");
+            cfg_DurabilityBonusPerTier = AddConfig("Durability", "Durability bonus per tier", 50f, "Durability bonus per tier");
+            cfg_DurabilityBonusPerUpgrade = AddConfig("Durability", "Durability bonus per upgrade", 50f, "Durability bonus per upgrade");
+            cfg_RespectOriginalDurability = AddConfig("Durability", "Respect original durability", true, "Only boost if base durability > 0");
+            cfg_MaxDurabilityCap = AddConfig("Durability", "Max durability cap", 2000f, "Maximum durability cap");
+
+            cfg_StatTierInterval = AddConfig("Stats", "Stat tier interval", 20, "Levels per stat tier");
+            cfg_ArmorBonusPerTier = AddConfig("Stats", "Armor bonus per tier", 5f, "Armor bonus per tier");
+            cfg_ArmorBonusPerUpgrade = AddConfig("Stats", "Armor bonus per upgrade", 2f, "Armor bonus per upgrade");
+            cfg_ArmorCap = AddConfig("Stats", "Armor cap", 300f, "Maximum armor value");
+            cfg_DamageBonusPerTier = AddConfig("Stats", "Damage bonus per tier", 10, "Damage bonus per tier");
+            cfg_StatBonusPerUpgrade = AddConfig("Stats", "Stat bonus per upgrade", 8f, "Stat bonus per upgrade");
+
+            cfg_AlwaysAddElementalAtMax = AddConfig("Elemental", "Add elemental at milestone", true, "Add elemental at milestone");
+            cfg_ElementalUnlockLevel = AddConfig("Elemental", "Elemental unlock level", 100, "Level for elemental bonuses");
+            cfg_ElementalBonusPerTier = AddConfig("Elemental", "Elemental bonus per tier", 5f, "Elemental bonus per tier");
+
+            cfg_TimedBlockBonusPerTier = AddConfig("Shields", "Timed block bonus per tier", 0.05f, "Parry bonus per tier");
+            cfg_TimedBlockBonusPerUpgrade = AddConfig("Shields", "Timed block bonus per upgrade", 0.05f, "Parry bonus per upgrade");
+            cfg_BlockPowerBonusPerTier = AddConfig("Shields", "Block power bonus per tier", 2f, "Block power per tier");
+            cfg_BlockPowerBonusPerUpgrade = AddConfig("Shields", "Block power bonus per upgrade", 1f, "Block power per upgrade");
+        }
+
+        // ================================
+        // CORE FUNCTIONALITY - SIMPLIFIED
+        // ================================
+
+        internal static int GetPlayerBlacksmithingLevel(Player player)
+        {
+            if (player?.GetComponent<Skills>() == null) return 0;
+            try
+            {
+                var skillType = Skill.fromName("Blacksmithing");
+                return Mathf.FloorToInt(player.GetComponent<Skills>().GetSkillLevel(skillType));
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        internal static void GiveBlacksmithingXP(Player player, float amount)
+        {
+            if (player == null || amount <= 0f) return;
+            try
+            {
+                float adjusted = amount * cfg_SkillGainFactor.Value;
+                SkillManager.SkillExtensions.RaiseSkill(player, "Blacksmithing", adjusted);
+                Debug.Log($"[BlacksmithingExpanded] Gave {adjusted:F2} XP to {player.GetPlayerName()}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[BlacksmithingExpanded] XP grant failed: {ex}");
+            }
+        }
+
+        private static void CacheBaseStats(ItemDrop.ItemData item)
+        {
+            string key = item.m_shared.m_name;
+            if (!baseStatsCache.ContainsKey(key))
+            {
+                baseStatsCache[key] = new ItemBaseStats
+                {
+                    armor = item.m_shared.m_armor,
+                    damages = item.m_shared.m_damages.Clone(),
+                    durability = item.m_shared.m_maxDurability,
+                    resistances = new List<HitData.DamageModPair>(item.m_shared.m_damageModifiers)
+                };
+                Debug.Log($"[BlacksmithingExpanded] Cached base stats for {key}");
+            }
+        }
+
+        private static ItemBaseStats GetBaseStats(ItemDrop.ItemData item)
+        {
+            CacheBaseStats(item);
+            return baseStatsCache[item.m_shared.m_name];
+        }
+
+        // ================================
+        // ITEM DATA MANAGEMENT - NETWORK SAFE
+        // ================================
+
+        private static void SaveBlacksmithingData(ItemDrop.ItemData item, BlacksmithingItemData data)
+        {
+            try
+            {
+                // Simple string serialization - no external dependencies
+                string dataString = $"{data.level}|{data.infusion}|{data.baseDurability}|{data.maxDurability}|{data.armorBonus}|" +
+                                   $"{data.damageDeltas.blunt}|{data.damageDeltas.slash}|{data.damageDeltas.pierce}|" +
+                                   $"{data.damageDeltas.fire}|{data.damageDeltas.frost}|{data.damageDeltas.lightning}|" +
+                                   $"{data.damageDeltas.poison}|{data.damageDeltas.spirit}";
+
+                item.m_customData["BlacksmithingData"] = dataString;
+                Debug.Log($"[BlacksmithingExpanded] Saved data for {item.m_shared.m_name}: level={data.level}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[BlacksmithingExpanded] Failed to save data: {ex}");
+            }
+        }
+
+        private static BlacksmithingItemData LoadBlacksmithingData(ItemDrop.ItemData item)
+        {
+            if (item.m_customData.TryGetValue("BlacksmithingData", out string dataString))
+            {
+                try
+                {
+                    string[] parts = dataString.Split('|');
+                    if (parts.Length >= 13)
+                    {
+                        var data = new BlacksmithingItemData
+                        {
+                            level = int.Parse(parts[0]),
+                            infusion = parts[1],
+                            baseDurability = float.Parse(parts[2]),
+                            maxDurability = float.Parse(parts[3]),
+                            armorBonus = float.Parse(parts[4]),
+                            damageDeltas = new DamageDeltas
+                            {
+                                blunt = float.Parse(parts[5]),
+                                slash = float.Parse(parts[6]),
+                                pierce = float.Parse(parts[7]),
+                                fire = float.Parse(parts[8]),
+                                frost = float.Parse(parts[9]),
+                                lightning = float.Parse(parts[10]),
+                                poison = float.Parse(parts[11]),
+                                spirit = float.Parse(parts[12])
+                            }
+                        };
+                        return data;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[BlacksmithingExpanded] Failed to load data: {ex}");
+                }
+            }
+            return null;
+        }
+
+        private static bool HasBlacksmithingData(ItemDrop.ItemData item)
+        {
+            return item.m_customData.ContainsKey("BlacksmithingData");
+        }
+        // ================================
+        // STAT APPLICATION - SINGLE SOURCE
+        // ================================
+
+        internal static void ApplyCraftingBonuses(ItemDrop.ItemData item, int level)
+        {
+            if (item?.m_shared == null || level <= 0) return;
+            if (item.m_shared.m_maxStackSize > 1) return; // Skip stackables
+
+            var baseStats = GetBaseStats(item);
+            int statTier = level / cfg_StatTierInterval.Value;
+            int durabilityTier = level / cfg_DurabilityTierInterval.Value;
+
+            var data = new BlacksmithingItemData { level = level };
+
+            // Apply durability bonus
+            if (!cfg_RespectOriginalDurability.Value || baseStats.durability > 0f)
+            {
+                float durabilityBonus = (durabilityTier * cfg_DurabilityBonusPerTier.Value) +
+                                        (item.m_quality * cfg_DurabilityBonusPerUpgrade.Value);
+
+                data.baseDurability = item.m_shared.m_maxDurability;
+                data.maxDurability = baseStats.durability + durabilityBonus;
+
+                if (cfg_MaxDurabilityCap.Value > 0f)
+                    data.maxDurability = Mathf.Min(data.maxDurability, cfg_MaxDurabilityCap.Value);
+
+                item.m_shared.m_maxDurability = data.maxDurability;
+                item.m_durability = data.maxDurability;
+            }
+
+            // Apply damage bonuses
+            float damageBonus = statTier * cfg_DamageBonusPerTier.Value;
+            float upgradeDamageBonus = item.m_quality * cfg_StatBonusPerUpgrade.Value;
+            float totalDamageBonus = damageBonus + upgradeDamageBonus;
+
+            if (totalDamageBonus > 0)
+            {
+                // Randomly boost one existing damage type
+                ApplyRandomDamageBonus(item, baseStats, totalDamageBonus, data);
+            }
+
+            // Apply armor bonus
+            if (baseStats.armor > 0f)
+            {
+                float armorBonus = (statTier * cfg_ArmorBonusPerTier.Value) +
+                                 (item.m_quality * cfg_ArmorBonusPerUpgrade.Value);
+
+                data.armorBonus = armorBonus;
+                item.m_shared.m_armor = baseStats.armor + armorBonus;
+                if (cfg_ArmorCap.Value > 0f)
+                    item.m_shared.m_armor = Mathf.Min(item.m_shared.m_armor, cfg_ArmorCap.Value);
+            }
+
+            // Apply shield bonuses
+            if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shield)
+            {
+                ApplyShieldBonuses(item, statTier);
+            }
+
+            // Apply elemental infusion
+            if (level >= cfg_ElementalUnlockLevel.Value && cfg_AlwaysAddElementalAtMax.Value && item.IsWeapon())
+            {
+                ApplyElementalInfusion(item, baseStats, statTier, data);
+            }
+
+            // Save all data for network sync
+            SaveBlacksmithingData(item, data);
+
+            Debug.Log($"[BlacksmithingExpanded] Applied bonuses to {item.m_shared.m_name}: level={level}, tier={statTier}");
+        }
+
+        private static void ApplyRandomDamageBonus(ItemDrop.ItemData item, ItemBaseStats baseStats, float bonus, BlacksmithingItemData data)
+        {
+            // Reset all damage deltas to zero
+            data.damageDeltas = new DamageDeltas();
+
+            var validTypes = new List<System.Action>();
+
+            if (baseStats.damages.m_blunt > 0f) validTypes.Add(() => {
+                item.m_shared.m_damages.m_blunt += bonus;
+                data.damageDeltas.blunt = bonus;
+            });
+            if (baseStats.damages.m_slash > 0f) validTypes.Add(() => {
+                item.m_shared.m_damages.m_slash += bonus;
+                data.damageDeltas.slash = bonus;
+            });
+            if (baseStats.damages.m_pierce > 0f) validTypes.Add(() => {
+                item.m_shared.m_damages.m_pierce += bonus;
+                data.damageDeltas.pierce = bonus;
+            });
+
+            if (validTypes.Count > 0)
+            {
+                validTypes[UnityEngine.Random.Range(0, validTypes.Count)]();
+            }
+        }
+
+
+        private static void ApplyShieldBonuses(ItemDrop.ItemData item, int tier)
+        {
+            if (item.m_shared.m_blockPower > 0f)
+            {
+                item.m_shared.m_blockPower += tier * cfg_BlockPowerBonusPerTier.Value +
+                                             item.m_quality * cfg_BlockPowerBonusPerUpgrade.Value;
+            }
+
+            if (item.m_shared.m_timedBlockBonus > 0f)
+            {
+                item.m_shared.m_timedBlockBonus += tier * cfg_TimedBlockBonusPerTier.Value +
+                                                  item.m_quality * cfg_TimedBlockBonusPerUpgrade.Value;
+            }
+        }
+
+        private static void ApplyElementalInfusion(ItemDrop.ItemData item, ItemBaseStats baseStats, int tier, BlacksmithingItemData data)
+        {
+            // Reset all elemental deltas to avoid lingering values
+            data.damageDeltas.fire = 0f;
+            data.damageDeltas.frost = 0f;
+            data.damageDeltas.lightning = 0f;
+
+            float bonus = tier * cfg_ElementalBonusPerTier.Value;
+
+            var elements = new List<(string name, System.Action apply)>
+    {
+        ("Fire", () => {
+            item.m_shared.m_damages.m_fire += bonus;
+            data.damageDeltas.fire = bonus;
+        }),
+        ("Frost", () => {
+            item.m_shared.m_damages.m_frost += bonus;
+            data.damageDeltas.frost = bonus;
+        }),
+        ("Lightning", () => {
+            item.m_shared.m_damages.m_lightning += bonus;
+            data.damageDeltas.lightning = bonus;
+        })
+    };
+
+            // Filter out existing damage types
+            elements.RemoveAll(e => e.name == "Fire" && baseStats.damages.m_fire > 0f);
+            elements.RemoveAll(e => e.name == "Frost" && baseStats.damages.m_frost > 0f);
+            elements.RemoveAll(e => e.name == "Lightning" && baseStats.damages.m_lightning > 0f);
+
+            if (elements.Count > 0)
+            {
+                var selected = elements[UnityEngine.Random.Range(0, elements.Count)];
+                selected.apply();
+                data.infusion = selected.name;
+                Debug.Log($"[BlacksmithingExpanded] Infused {item.m_shared.m_name} with {selected.name}");
+            }
+        }
+
+        // ================================
+        // STAT RESTORATION - NETWORK SYNC
+        // ================================
+
+        private static void RestoreBlacksmithingStats(ItemDrop.ItemData item)
+        {
+            var data = LoadBlacksmithingData(item);
+            if (data == null) return;
+
+            var baseStats = GetBaseStats(item); // Use cached prefab values as baseline
+
+            // Restore durability
+            item.m_shared.m_maxDurability = data.maxDurability;
+            item.m_durability = Mathf.Min(item.m_durability, data.maxDurability);
+
+            // Restore armor
+            item.m_shared.m_armor = baseStats.armor + data.armorBonus;
+
+            // Restore damage
+            var dmg = item.m_shared.m_damages;
+            dmg.m_blunt = baseStats.damages.m_blunt + data.damageDeltas.blunt;
+            dmg.m_slash = baseStats.damages.m_slash + data.damageDeltas.slash;
+            dmg.m_pierce = baseStats.damages.m_pierce + data.damageDeltas.pierce;
+            dmg.m_fire = baseStats.damages.m_fire + data.damageDeltas.fire;
+            dmg.m_frost = baseStats.damages.m_frost + data.damageDeltas.frost;
+            dmg.m_lightning = baseStats.damages.m_lightning + data.damageDeltas.lightning;
+            dmg.m_poison = baseStats.damages.m_poison + data.damageDeltas.poison;
+            dmg.m_spirit = baseStats.damages.m_spirit + data.damageDeltas.spirit;
+
+
+            Debug.Log($"[BlacksmithingExpanded] Restored stats for {item.m_shared.m_name}: " +
+                      $"Durability={item.m_durability}/{item.m_shared.m_maxDurability}, " +
+                      $"Armor={item.m_shared.m_armor}");
+        }
+
+        // ================================
+        // HARMONY PATCHES - SIMPLIFIED
+        // ================================
+
+        [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.DoCrafting))]
+        public static class Patch_Crafting
+        {
+            static void Postfix(InventoryGui __instance)
+            {
+                var player = Player.m_localPlayer;
+                if (player?.GetInventory() == null) return;
+
+                var craftedItem = player.GetInventory().GetAllItems().LastOrDefault();
+                if (craftedItem?.m_shared == null) return;
+
+                int level = GetPlayerBlacksmithingLevel(player);
+                if (level <= 0) return;
+
+                // Apply bonuses immediately (no delay)
+                ApplyCraftingBonuses(craftedItem, level);
+
+                // Handle XP
+                HandleCraftingXP(player, craftedItem);
+
+                // Extra item chance
+                float extraChance = cfg_ChanceExtraItemAt100.Value * (level / 100f);
+                if (UnityEngine.Random.value <= extraChance)
+                {
+                    player.GetInventory().AddItem(craftedItem.m_shared.m_name, 1, 1, 0, player.GetPlayerID(), player.GetPlayerName());
+                    player.Message(MessageHud.MessageType.TopLeft, "Masterwork crafting created an extra item!");
+                }
+            }
+        }
+
+        private static void HandleCraftingXP(Player player, ItemDrop.ItemData item)
+        {
+            // First craft bonus
+            string craftKey = "crafted_" + item.m_shared.m_name;
+            if (!player.m_customData.ContainsKey(craftKey))
+            {
+                player.m_customData[craftKey] = "1";
+                GiveBlacksmithingXP(player, cfg_FirstCraftBonusXP.Value);
+            }
+
+            // Regular XP
+            GiveBlacksmithingXP(player, cfg_XPPerCraft.Value);
+        }
+
+        [HarmonyPatch(typeof(Humanoid), nameof(Humanoid.EquipItem))]
+        public static class Patch_EquipItem
+        {
+            static void Postfix(ItemDrop.ItemData item)
+            {
+                if (HasBlacksmithingData(item))
+                {
+                    RestoreBlacksmithingStats(item);
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(ItemDrop.ItemData), nameof(ItemDrop.ItemData.GetTooltip), typeof(ItemDrop.ItemData), typeof(int), typeof(bool), typeof(float), typeof(int))]
+        public static class Patch_Tooltip
+        {
+            public static void Postfix(ItemDrop.ItemData item, bool crafting, ref string __result)
+            {
+                if (item == null) return;
+
+                // 🔧 FIX: Ensure stats are restored before tooltip is built
+                RestoreBlacksmithingStats(item);
+
+                var data = LoadBlacksmithingData(item);
+                if (data?.level > 0)
+                {
+                    if (cfg_ShowBlacksmithLevelInTooltip.Value)
+                    {
+                        __result += $"\n<color=orange>Forged at Blacksmithing {data.level}</color>";
+                    }
+
+                    if (cfg_ShowInfusionInTooltip.Value && !string.IsNullOrEmpty(data.infusion))
+                    {
+                        __result += $"\n<color=#87CEEB>Elemental Infusion: {data.infusion}</color>";
+                    }
+                }
+            }
+        }
+
+        // ================================
+        // WORKSTATION PATCHES - SIMPLIFIED
+        // ================================
+
+        [HarmonyPatch(typeof(Smelter), "OnAddOre")]
+        public static class Patch_Smelter_AddOre_Consolidated
+        {
+            static void Postfix(Smelter __instance, Humanoid user, bool __result)
+            {
+                if (!__result || !(user is Player player)) return;
+
+                GiveBlacksmithingXP(player, cfg_XPPerSmelt.Value);
+
+                bool isKiln = __instance.m_name == "charcoal_kiln";
+
+                // Ore save chance (smelter only)
+                if (!isKiln)
+                {
+                    int level = GetPlayerBlacksmithingLevel(player);
+                    float saveChance = cfg_SmelterSaveOreChanceAt100.Value * (level / 100f);
+                    if (UnityEngine.Random.value <= saveChance)
+                    {
+                        player.Message(MessageHud.MessageType.TopLeft, "Masterwork efficiency saved some ore!");
+                    }
+                }
+
+                // Track infusion for both smelter and kiln
+                var zdo = __instance.m_nview?.GetZDO();
+                if (zdo != null)
+                {
+                    int tier = GetPlayerBlacksmithingLevel(player) / cfg_InfusionTierInterval.Value;
+                    var infusion = new WorkstationInfusion { tier = tier, timestamp = Time.time };
+
+                    if (isKiln)
+                        kilnInfusions[zdo.m_uid] = infusion;
+                    else
+                        smelterInfusions[zdo.m_uid] = infusion;
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(Smelter), "UpdateSmelter")]
+        public static class Patch_Smelter_Update_Fixed
+        {
+            static void Prefix(Smelter __instance)
+            {
+                var zdo = __instance.m_nview?.GetZDO();
+                if (zdo == null) return;
+
+                bool isKiln = __instance.m_name == "charcoal_kiln";
+
+                if (isKiln)
+                {
+                    // Handle kiln logic
+                    if (!originalKilnSpeeds.ContainsKey(zdo.m_uid))
+                    {
+                        originalKilnSpeeds[zdo.m_uid] = __instance.m_secPerProduct;
+                    }
+
+                    if (kilnInfusions.TryGetValue(zdo.m_uid, out var kilnInfusion))
+                    {
+                        // Check if expired or inactive
+                        if (__instance.GetQueueSize() == 0 || Time.time - kilnInfusion.timestamp > cfg_InfusionExpireTime.Value)
+                        {
+                            __instance.m_secPerProduct = originalKilnSpeeds[zdo.m_uid];
+                            kilnInfusions.Remove(zdo.m_uid);
+                            return;
+                        }
+
+                        // Apply speed bonus using cached original value
+                        float speedMultiplier = 1f + (kilnInfusion.tier * cfg_KilnSpeedBonusPerTier.Value);
+                        __instance.m_secPerProduct = originalKilnSpeeds[zdo.m_uid] / speedMultiplier;
+                    }
+                    else
+                    {
+                        __instance.m_secPerProduct = originalKilnSpeeds[zdo.m_uid];
+                    }
+                }
+                else
+                {
+                    // Handle smelter logic
+                    if (!originalSmelterSpeeds.ContainsKey(zdo.m_uid))
+                    {
+                        originalSmelterSpeeds[zdo.m_uid] = __instance.m_secPerProduct;
+                    }
+
+                    if (smelterInfusions.TryGetValue(zdo.m_uid, out var smelterInfusion))
+                    {
+                        // Check if expired or inactive
+                        if (__instance.GetQueueSize() == 0 || __instance.GetFuel() <= 0f ||
+                            Time.time - smelterInfusion.timestamp > cfg_InfusionExpireTime.Value)
+                        {
+                            __instance.m_secPerProduct = originalSmelterSpeeds[zdo.m_uid];
+                            smelterInfusions.Remove(zdo.m_uid);
+                            return;
+                        }
+
+                        // Apply speed bonus using cached original value
+                        float speedMultiplier = 1f + (smelterInfusion.tier * cfg_SmeltingSpeedBonusPerTier.Value);
+                        __instance.m_secPerProduct = originalSmelterSpeeds[zdo.m_uid] / speedMultiplier;
+                    }
+                    else
+                    {
+                        __instance.m_secPerProduct = originalSmelterSpeeds[zdo.m_uid];
+                    }
+                }
+            }
+        }
+
+        // Inventory repair patch
+        [HarmonyPatch(typeof(InventoryGui), "OnRepairPressed")]
+        public static class Patch_InventoryRepair
+        {
+            static bool Prefix(InventoryGui __instance)
+            {
+                if (!cfg_EnableInventoryRepair.Value) return true;
+
+                var player = Player.m_localPlayer;
+                if (player == null) return true;
+
+                int level = GetPlayerBlacksmithingLevel(player);
+                if (level < cfg_InventoryRepairUnlockLevel.Value) return true;
+
+                var inventory = player.GetInventory();
+                if (inventory == null) return true;
+
+                // Find first damaged item and repair it
+                foreach (var item in inventory.GetAllItems())
+                {
+                    if (item?.m_shared?.m_maxDurability > 0 && item.m_durability < item.GetMaxDurability())
+                    {
+                        float repairAmount = item.GetMaxDurability() - item.m_durability;
+                        item.m_durability = item.GetMaxDurability();
+
+                        GiveBlacksmithingXP(player, cfg_XPPerRepair.Value);
+
+                        // Visual effect
+                        var fx = ZNetScene.instance.GetPrefab("vfx_Smelter_add");
+                        if (fx != null)
+                            UnityEngine.Object.Instantiate(fx, player.transform.position, Quaternion.identity);
+
+                        player.Message(MessageHud.MessageType.TopLeft,
+                            $"Repaired with masterwork precision! (+{repairAmount:F0} durability)", 0, null);
+
+                        return false; // Prevent default repair, we handled it
+                    }
+                }
+
+                return true; // No items to repair, allow default behavior
+            }
+        }
+        // Working patches based on actual Valheim methods
+
+        // ================================
+        // CRITICAL ITEM RESTORATION PATCHES
+        // ================================
+
+        [HarmonyPatch(typeof(ItemDrop.ItemData), nameof(ItemDrop.ItemData.Clone))]
+        public static class Patch_ItemData_Clone
+        {
+            static void Postfix(ItemDrop.ItemData __result)
+            {
+                if (__result != null && HasBlacksmithingData(__result))
+                {
+                    RestoreBlacksmithingStats(__result);
+                    Debug.Log($"[BlacksmithingExpanded] Restored stats after clone for {__result.m_shared.m_name}");
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(Inventory), nameof(Inventory.AddItem), typeof(ItemDrop.ItemData))]
+        public static class Patch_Inventory_AddItem
+        {
+            static void Postfix(bool __result, ItemDrop.ItemData item)
+            {
+                if (__result && item != null && HasBlacksmithingData(item))
+                {
+                    RestoreBlacksmithingStats(item);
+                    Debug.Log($"[BlacksmithingExpanded] Restored stats when adding to inventory: {item.m_shared.m_name}");
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(Humanoid), nameof(Humanoid.Pickup))]
+        public static class Patch_Humanoid_Pickup
+        {
+            static void Postfix(bool __result, GameObject go)
+            {
+                if (!__result) return;
+
+                var itemDrop = go?.GetComponent<ItemDrop>();
+                if (itemDrop?.m_itemData != null && HasBlacksmithingData(itemDrop.m_itemData))
+                {
+                    RestoreBlacksmithingStats(itemDrop.m_itemData);
+                    Debug.Log($"[BlacksmithingExpanded] Restored stats after pickup: {itemDrop.m_itemData.m_shared.m_name}");
+                }
+            }
+        }
+
+        // Enhanced ItemDrop Awake patch - this is the critical one
+        [HarmonyPatch(typeof(ItemDrop), nameof(ItemDrop.Awake))]
+        public static class Patch_ItemDrop_Awake_Enhanced
+        {
+            static void Postfix(ItemDrop __instance)
+            {
+                if (__instance?.m_itemData == null) return;
+
+                // Immediate restoration
+                if (HasBlacksmithingData(__instance.m_itemData))
+                {
+                    RestoreBlacksmithingStats(__instance.m_itemData);
+                    Debug.Log($"[BlacksmithingExpanded] Immediate restore for {__instance.m_itemData.m_shared.m_name}");
+                }
+
+                // Schedule delayed restoration as backup
+                __instance.StartCoroutine(DelayedRestore(__instance));
+            }
+
+            private static IEnumerator DelayedRestore(ItemDrop itemDrop)
+            {
+                // Wait multiple frames to ensure all initialization is complete
+                yield return new WaitForEndOfFrame();
+                yield return new WaitForFixedUpdate();
+                yield return new WaitForEndOfFrame();
+
+                if (itemDrop?.m_itemData != null && HasBlacksmithingData(itemDrop.m_itemData))
+                {
+                    RestoreBlacksmithingStats(itemDrop.m_itemData);
+                    Debug.Log($"[BlacksmithingExpanded] Delayed restore complete for {itemDrop.m_itemData.m_shared.m_name}");
+                }
+            }
+        }
+
+        // Patch the actual ItemDrop Save method to preserve data in ZDO
+        [HarmonyPatch(typeof(ItemDrop), nameof(ItemDrop.Save))]
+        public static class Patch_ItemDrop_Save
+        {
+            static void Prefix(ItemDrop __instance)
+            {
+                if (__instance?.m_itemData == null || __instance.m_nview?.GetZDO() == null) return;
+
+                var data = LoadBlacksmithingData(__instance.m_itemData);
+                if (data != null)
+                {
+                    var zdo = __instance.m_nview.GetZDO();
+
+                    // Store data in ZDO for network persistence
+                    zdo.Set("BlacksmithingLevel", data.level);
+                    zdo.Set("BlacksmithingInfusion", data.infusion ?? "");
+                    zdo.Set("BlacksmithingMaxDur", data.maxDurability);
+                    zdo.Set("BlacksmithingArmorBonus", data.armorBonus);
+
+                    // Store damage deltas
+                    zdo.Set("BlacksmithingDmgBlunt", data.damageDeltas.blunt);
+                    zdo.Set("BlacksmithingDmgSlash", data.damageDeltas.slash);
+                    zdo.Set("BlacksmithingDmgPierce", data.damageDeltas.pierce);
+                    zdo.Set("BlacksmithingDmgFire", data.damageDeltas.fire);
+                    zdo.Set("BlacksmithingDmgFrost", data.damageDeltas.frost);
+                    zdo.Set("BlacksmithingDmgLightning", data.damageDeltas.lightning);
+                    zdo.Set("BlacksmithingDmgPoison", data.damageDeltas.poison);
+                    zdo.Set("BlacksmithingDmgSpirit", data.damageDeltas.spirit);
+
+                    Debug.Log($"[BlacksmithingExpanded] Saved data to ZDO for {__instance.m_itemData.m_shared.m_name}");
+                }
+            }
+        }
+
+        // Patch the actual ItemDrop Load method to restore data from ZDO
+        [HarmonyPatch(typeof(ItemDrop), nameof(ItemDrop.Load))]
+        public static class Patch_ItemDrop_Load
+        {
+            static void Postfix(ItemDrop __instance)
+            {
+                if (__instance?.m_itemData == null || __instance.m_nview?.GetZDO() == null) return;
+
+                var zdo = __instance.m_nview.GetZDO();
+                int level = zdo.GetInt("BlacksmithingLevel", 0);
+
+                if (level > 0)
+                {
+                    // Restore from ZDO if custom data is missing
+                    if (!HasBlacksmithingData(__instance.m_itemData))
+                    {
+                        var data = new BlacksmithingItemData
+                        {
+                            level = level,
+                            infusion = zdo.GetString("BlacksmithingInfusion", ""),
+                            maxDurability = zdo.GetFloat("BlacksmithingMaxDur", 0f),
+                            armorBonus = zdo.GetFloat("BlacksmithingArmorBonus", 0f),
+                            damageDeltas = new DamageDeltas
+                            {
+                                blunt = zdo.GetFloat("BlacksmithingDmgBlunt", 0f),
+                                slash = zdo.GetFloat("BlacksmithingDmgSlash", 0f),
+                                pierce = zdo.GetFloat("BlacksmithingDmgPierce", 0f),
+                                fire = zdo.GetFloat("BlacksmithingDmgFire", 0f),
+                                frost = zdo.GetFloat("BlacksmithingDmgFrost", 0f),
+                                lightning = zdo.GetFloat("BlacksmithingDmgLightning", 0f),
+                                poison = zdo.GetFloat("BlacksmithingDmgPoison", 0f),
+                                spirit = zdo.GetFloat("BlacksmithingDmgSpirit", 0f)
+                            }
+                        };
+
+                        SaveBlacksmithingData(__instance.m_itemData, data);
+                        Debug.Log($"[BlacksmithingExpanded] Recovered data from ZDO for {__instance.m_itemData.m_shared.m_name}");
+                    }
+
+                    // Always restore stats
+                    RestoreBlacksmithingStats(__instance.m_itemData);
+                }
+            }
+        }
+
+        // Patch for when items are transferred between inventories
+        [HarmonyPatch(typeof(Inventory), nameof(Inventory.MoveItemToThis), typeof(Inventory), typeof(ItemDrop.ItemData), typeof(int), typeof(int), typeof(int))]
+        public static class Patch_Inventory_MoveItem
+        {
+            static void Postfix(bool __result, ItemDrop.ItemData item)
+            {
+                if (__result && item != null && HasBlacksmithingData(item))
+                {
+                    RestoreBlacksmithingStats(item);
+                    Debug.Log($"[BlacksmithingExpanded] Restored stats after move: {item.m_shared.m_name}");
+                }
+            }
+        }
+
+        // Patch for when ZNetScene creates objects (network sync)
+        [HarmonyPatch(typeof(ZNetScene), nameof(ZNetScene.CreateObject))]
+        public static class Patch_ZNetScene_CreateObject
+        {
+            static void Postfix(GameObject __result, ZDO zdo)
+            {
+                if (__result == null) return;
+
+                var itemDrop = __result.GetComponent<ItemDrop>();
+                if (itemDrop?.m_itemData != null)
+                {
+                    // Check if ZDO contains blacksmithing data
+                    int level = zdo.GetInt("BlacksmithingLevel", 0);
+                    if (level > 0)
+                    {
+                        // Restore from ZDO if needed
+                        if (!HasBlacksmithingData(itemDrop.m_itemData))
+                        {
+                            var data = new BlacksmithingItemData
+                            {
+                                level = level,
+                                infusion = zdo.GetString("BlacksmithingInfusion", ""),
+                                maxDurability = zdo.GetFloat("BlacksmithingMaxDur", 0f),
+                                armorBonus = zdo.GetFloat("BlacksmithingArmorBonus", 0f),
+                                damageDeltas = new DamageDeltas
+                                {
+                                    blunt = zdo.GetFloat("BlacksmithingDmgBlunt", 0f),
+                                    slash = zdo.GetFloat("BlacksmithingDmgSlash", 0f),
+                                    pierce = zdo.GetFloat("BlacksmithingDmgPierce", 0f),
+                                    fire = zdo.GetFloat("BlacksmithingDmgFire", 0f),
+                                    frost = zdo.GetFloat("BlacksmithingDmgFrost", 0f),
+                                    lightning = zdo.GetFloat("BlacksmithingDmgLightning", 0f),
+                                    poison = zdo.GetFloat("BlacksmithingDmgPoison", 0f),
+                                    spirit = zdo.GetFloat("BlacksmithingDmgSpirit", 0f)
+                                }
+                            };
+
+                            SaveBlacksmithingData(itemDrop.m_itemData, data);
+                        }
+
+                        // Always restore if we have data
+                        RestoreBlacksmithingStats(itemDrop.m_itemData);
+                        Debug.Log($"[BlacksmithingExpanded] Restored stats for network object: {itemDrop.m_itemData.m_shared.m_name}");
+                    }
+                }
+            }
+        }
+
+        // Safety patch for player loading
+        [HarmonyPatch(typeof(Player), nameof(Player.Load))]
+        public static class Patch_Player_Load
+        {
+            static void Postfix(Player __instance)
+            {
+                if (__instance?.GetInventory() == null) return;
+
+                // Schedule inventory restoration after loading
+                __instance.StartCoroutine(RestorePlayerInventory(__instance));
+            }
+
+            private static IEnumerator RestorePlayerInventory(Player player)
+            {
+                yield return new WaitForSeconds(1f); // Wait for full load
+
+                if (player?.GetInventory() != null)
+                {
+                    foreach (var item in player.GetInventory().GetAllItems())
+                    {
+                        if (item != null && HasBlacksmithingData(item))
+                        {
+                            RestoreBlacksmithingStats(item);
+                        }
+                    }
+                    Debug.Log($"[BlacksmithingExpanded] Restored inventory stats for {player.GetPlayerName()}");
+                }
+            }
+        }
+
+        // Additional safety for item drops on the ground being interacted with
+        [HarmonyPatch(typeof(ItemDrop), nameof(ItemDrop.Interact))]
+        public static class Patch_ItemDrop_Interact
+        {
+            static bool Prefix(ItemDrop __instance)
+            {
+                if (__instance?.m_itemData != null && HasBlacksmithingData(__instance.m_itemData))
+                {
+                    RestoreBlacksmithingStats(__instance.m_itemData);
+                    Debug.Log($"[BlacksmithingExpanded] Restored stats before interact: {__instance.m_itemData.m_shared.m_name}");
+                }
+                return true; // Continue with original method
+            }
+        }
+
+        // Enhanced patch to catch any remaining stat restoration needs
+        [HarmonyPatch(typeof(ZNetScene), nameof(ZNetScene.AddInstance))]
+        public static class Patch_ZNetScene_AddInstance
+        {
+            static void Postfix(ZDO zdo, ZNetView nview)
+            {
+                if (nview?.gameObject == null) return;
+
+                var itemDrop = nview.gameObject.GetComponent<ItemDrop>();
+                if (itemDrop?.m_itemData != null)
+                {
+                    // Check ZDO for blacksmithing data and restore if needed
+                    int level = zdo.GetInt("BlacksmithingLevel", 0);
+                    if (level > 0 && !HasBlacksmithingData(itemDrop.m_itemData))
+                    {
+                        var data = new BlacksmithingItemData
+                        {
+                            level = level,
+                            infusion = zdo.GetString("BlacksmithingInfusion", ""),
+                            maxDurability = zdo.GetFloat("BlacksmithingMaxDur", 0f),
+                            armorBonus = zdo.GetFloat("BlacksmithingArmorBonus", 0f),
+                            damageDeltas = new DamageDeltas
+                            {
+                                blunt = zdo.GetFloat("BlacksmithingDmgBlunt", 0f),
+                                slash = zdo.GetFloat("BlacksmithingDmgSlash", 0f),
+                                pierce = zdo.GetFloat("BlacksmithingDmgPierce", 0f),
+                                fire = zdo.GetFloat("BlacksmithingDmgFire", 0f),
+                                frost = zdo.GetFloat("BlacksmithingDmgFrost", 0f),
+                                lightning = zdo.GetFloat("BlacksmithingDmgLightning", 0f),
+                                poison = zdo.GetFloat("BlacksmithingDmgPoison", 0f),
+                                spirit = zdo.GetFloat("BlacksmithingDmgSpirit", 0f)
+                            }
+                        };
+
+                        SaveBlacksmithingData(itemDrop.m_itemData, data);
+                        RestoreBlacksmithingStats(itemDrop.m_itemData);
+                        Debug.Log($"[BlacksmithingExpanded] Restored from ZDO in AddInstance: {itemDrop.m_itemData.m_shared.m_name}");
+                    }
+                    else if (HasBlacksmithingData(itemDrop.m_itemData))
+                    {
+                        RestoreBlacksmithingStats(itemDrop.m_itemData);
+                    }
+                }
+            }
+        }
+
+        // ================================
+        // UTILITY METHODS
+        // ================================
+
+        private static Sprite LoadEmbeddedSprite(string resourceName, int width, int height)
+        {
+            try
+            {
+                using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("BlacksmithingExpanded.icons." + resourceName))
+                {
+                    if (stream == null) return null;
+
+                    using (var ms = new MemoryStream())
+                    {
+                        stream.CopyTo(ms);
+                        byte[] bytes = ms.ToArray();
+
+                        Texture2D tex = new Texture2D(width, height);
+                        if (tex.LoadImage(bytes))
+                        {
+                            return Sprite.Create(tex, new Rect(0, 0, width, height), Vector2.zero);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[BlacksmithingExpanded] Failed to load sprite {resourceName}: {ex}");
+            }
+            return null;
+        }
+    }
+}
