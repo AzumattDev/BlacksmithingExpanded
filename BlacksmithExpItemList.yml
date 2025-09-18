@@ -1,0 +1,9 @@
+# Comments are allowed
+Whitelist:
+  - SwordIron
+  - ShieldBronze
+  # - CommentedItem
+
+Blacklist:
+  - WoodenClub
+  - StoneAxe

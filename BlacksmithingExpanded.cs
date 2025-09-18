@@ -12,6 +12,7 @@ using System.Linq;
 using System.Reflection;
 using UnityEngine;
 using ItemDataManager;
+// Removed YamlDotNet dependency - using custom lightweight parser
 
 namespace BlacksmithingExpanded
 {
@@ -19,7 +20,7 @@ namespace BlacksmithingExpanded
     public class BlacksmithingExpanded : BaseUnityPlugin
     {
         internal const string ModName = "Blacksmithing Expanded";
-        internal const string ModVersion = "1.0.1";
+        internal const string ModVersion = "1.0.2";
         internal const string ModGUID = "org.bepinex.plugins.blacksmithingexpanded";
 
         private Harmony harmony;
@@ -37,6 +38,12 @@ namespace BlacksmithingExpanded
         // Base stat cache - single source of truth
         private static readonly Dictionary<string, ItemBaseStats> baseStatsCache = new();
 
+        // Item filtering system
+        private static ItemFilterConfig itemFilterConfig;
+        private static readonly HashSet<string> whitelistedItems = new();
+        private static readonly HashSet<string> blacklistedItems = new();
+        private static string configPath;
+
         // Workstation infusions (unchanged)
         internal static Dictionary<ZDOID, WorkstationInfusion> smelterInfusions = new();
         internal static Dictionary<ZDOID, WorkstationInfusion> kilnInfusions = new();
@@ -46,7 +53,7 @@ namespace BlacksmithingExpanded
         private static readonly Dictionary<ZDOID, float> originalKilnSpeeds = new();
         private static readonly Dictionary<ZDOID, GameObject> activeGlowEffects = new();
 
-        // Config entries (keeping your existing structure)
+        // Config entries (keeping your existing structure + new ones)
         internal static ConfigEntry<float> cfg_SkillGainFactor;
         internal static ConfigEntry<float> cfg_SkillEffectFactor;
         internal static ConfigEntry<int> cfg_InfusionTierInterval;
@@ -61,6 +68,10 @@ namespace BlacksmithingExpanded
         internal static ConfigEntry<bool> cfg_ShowBlacksmithLevelInTooltip;
         internal static ConfigEntry<bool> cfg_ShowInfusionInTooltip;
         internal static ConfigEntry<float> cfg_FirstCraftBonusXP;
+
+        // NEW YAML Configuration (removed auto-creation)
+        internal static ConfigEntry<bool> cfg_UseYamlFiltering;
+        internal static ConfigEntry<bool> cfg_LogFilteredItems;
 
         // Durability
         internal static ConfigEntry<int> cfg_DurabilityTierInterval;
@@ -123,6 +134,13 @@ namespace BlacksmithingExpanded
             public float RemainingTime => Mathf.Max(0f, cfg_InfusionExpireTime.Value - (Time.time - timestamp));
         }
 
+        // YAML Configuration Classes (simplified structure)
+        private class ItemFilterConfig
+        {
+            public List<string> Whitelist { get; set; } = new List<string>();
+            public List<string> Blacklist { get; set; } = new List<string>();
+        }
+
         private ConfigEntry<T> AddConfig<T>(string group, string name, T value, string description, bool sync = true)
         {
             var entry = Config.Bind(group, name, value, new ConfigDescription(description));
@@ -134,6 +152,7 @@ namespace BlacksmithingExpanded
         private void Awake()
         {
             harmony = new Harmony(ModGUID);
+            configPath = Path.Combine(Path.GetDirectoryName(Config.ConfigFilePath), "BlacksmithExpItemList.yml");
 
             // Load skill icon
             try
@@ -157,6 +176,9 @@ namespace BlacksmithingExpanded
             // Setup configs
             SetupConfigs();
 
+            // Initialize YAML filtering system
+            InitializeYamlFiltering();
+
             // Sync skill configs
             if (blacksmithSkill != null)
             {
@@ -165,6 +187,9 @@ namespace BlacksmithingExpanded
                 cfg_SkillGainFactor.SettingChanged += (_, _) => blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
                 cfg_SkillEffectFactor.SettingChanged += (_, _) => blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
             }
+
+            // Setup YAML config change handler (simplified)
+            cfg_UseYamlFiltering.SettingChanged += (_, _) => ReloadYamlConfiguration();
 
             // Register ItemDataManager type for force loading
             ItemInfo.ForceLoadTypes.Add(typeof(BlacksmithingItemData));
@@ -186,6 +211,10 @@ namespace BlacksmithingExpanded
             cfg_ChanceExtraItemAt100 = AddConfig("General", "Extra item chance at 100", 0.05f, "Chance for extra item at level 100");
             cfg_EnableInventoryRepair = AddConfig("General", "Enable inventory repair", true, "Allow repairing from inventory");
             cfg_InventoryRepairUnlockLevel = AddConfig("General", "Inventory repair unlock level", 70, "Level for inventory repairs");
+
+            // NEW YAML Configuration Options (simplified)
+            cfg_UseYamlFiltering = AddConfig("Item Filtering", "Use YAML item filtering", false, "Enable YAML-based item whitelist/blacklist system");
+            cfg_LogFilteredItems = AddConfig("Item Filtering", "Log filtered items", false, "Log when items are filtered by whitelist/blacklist");
 
             // XP
             cfg_XPPerCraft = AddConfig("XP", "XP per craft", 5f, "Base XP when crafting");
@@ -226,6 +255,140 @@ namespace BlacksmithingExpanded
             cfg_TimedBlockBonusPerUpgrade = AddConfig("Shields", "Timed block bonus per upgrade", 0.05f, "Parry bonus per upgrade");
             cfg_BlockPowerBonusPerTier = AddConfig("Shields", "Block power bonus per tier", 2f, "Block power per tier");
             cfg_BlockPowerBonusPerUpgrade = AddConfig("Shields", "Block power bonus per upgrade", 1f, "Block power per upgrade");
+        }
+
+        // ================================
+        // YAML FILTERING SYSTEM
+        // ================================
+
+        private void InitializeYamlFiltering()
+        {
+            try
+            {
+                ReloadYamlConfiguration();
+                Logger.LogInfo($"[BlacksmithingExpanded] YAML filtering system initialized. File: {configPath}");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError($"[BlacksmithingExpanded] Failed to initialize YAML filtering: {ex}");
+            }
+        }
+
+        private void ReloadYamlConfiguration()
+        {
+            whitelistedItems.Clear();
+            blacklistedItems.Clear();
+
+            if (!cfg_UseYamlFiltering.Value)
+            {
+                Logger.LogInfo("[BlacksmithingExpanded] YAML filtering disabled");
+                return;
+            }
+
+            if (!File.Exists(configPath))
+            {
+                Logger.LogWarning($"[BlacksmithingExpanded] YAML file not found: {configPath}");
+                Logger.LogInfo("[BlacksmithingExpanded] Create a BlacksmithExpItemList.yml file in your config folder with the following format:");
+                Logger.LogInfo("Whitelist:\n  - ItemName1\n  - ItemName2\nBlacklist:\n  - ItemName3\n  - ItemName4");
+                return;
+            }
+
+            try
+            {
+                string[] lines = File.ReadAllLines(configPath);
+                bool inWhitelist = false;
+                bool inBlacklist = false;
+
+                foreach (string line in lines)
+                {
+                    string trimmed = line.Trim();
+
+                    // Skip empty lines and comments
+                    if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#")) continue;
+
+                    // Check for section headers
+                    if (trimmed.StartsWith("Whitelist:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        inWhitelist = true;
+                        inBlacklist = false;
+                        continue;
+                    }
+                    else if (trimmed.StartsWith("Blacklist:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        inWhitelist = false;
+                        inBlacklist = true;
+                        continue;
+                    }
+
+                    // Process list items (lines starting with -)
+                    if (trimmed.StartsWith("-"))
+                    {
+                        string itemName = trimmed.Substring(1).Trim();
+
+                        // Skip commented items
+                        if (itemName.StartsWith("#")) continue;
+
+                        if (!string.IsNullOrEmpty(itemName))
+                        {
+                            if (inWhitelist)
+                            {
+                                whitelistedItems.Add(itemName);
+                            }
+                            else if (inBlacklist)
+                            {
+                                blacklistedItems.Add(itemName);
+                            }
+                        }
+                    }
+                }
+
+                Logger.LogInfo($"[BlacksmithingExpanded] Loaded YAML config - Whitelist: {whitelistedItems.Count} items, Blacklist: {blacklistedItems.Count} items");
+
+                if (whitelistedItems.Count > 0)
+                {
+                    Logger.LogInfo($"[BlacksmithingExpanded] Whitelisted items: {string.Join(", ", whitelistedItems)}");
+                }
+
+                if (blacklistedItems.Count > 0)
+                {
+                    Logger.LogInfo($"[BlacksmithingExpanded] Blacklisted items: {string.Join(", ", blacklistedItems)}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError($"[BlacksmithingExpanded] Failed to load YAML config: {ex}");
+            }
+        }
+
+        internal static bool IsItemAllowed(ItemDrop.ItemData item)
+        {
+            if (!cfg_UseYamlFiltering.Value) return true;
+            if (item?.m_shared?.m_name == null) return false;
+
+            string itemName = item.m_shared.m_name;
+
+            // If whitelist has entries, only allow whitelisted items
+            if (whitelistedItems.Count > 0)
+            {
+                bool allowed = whitelistedItems.Contains(itemName);
+                if (cfg_LogFilteredItems.Value && !allowed)
+                {
+                    Debug.Log($"[BlacksmithingExpanded] Item '{itemName}' not in whitelist - filtering out");
+                }
+                return allowed;
+            }
+
+            // If no whitelist, check blacklist
+            if (blacklistedItems.Contains(itemName))
+            {
+                if (cfg_LogFilteredItems.Value)
+                {
+                    Debug.Log($"[BlacksmithingExpanded] Item '{itemName}' is blacklisted - filtering out");
+                }
+                return false;
+            }
+
+            return true;
         }
 
         // ================================
@@ -387,6 +550,16 @@ namespace BlacksmithingExpanded
         {
             if (item?.m_shared == null || level <= 0) return;
             if (item.m_shared.m_maxStackSize > 1) return; // Skip stackables
+
+            // NEW: Check if item is allowed by YAML filtering
+            if (!IsItemAllowed(item))
+            {
+                if (cfg_LogFilteredItems.Value)
+                {
+                    Debug.Log($"[BlacksmithingExpanded] Item '{item.m_shared.m_name}' filtered out by YAML configuration");
+                }
+                return;
+            }
 
             var baseStats = GetBaseStats(item);
             int statTier = level / cfg_StatTierInterval.Value;
@@ -861,7 +1034,7 @@ namespace BlacksmithingExpanded
                     glowObject.AddComponent<FlickerLight>();
 
                     activeGlowEffects[zdoid] = glowObject;
-                   // Debug.Log($"[BlacksmithingExpanded] Created infusion light for {workstation.name}");
+                    // Debug.Log($"[BlacksmithingExpanded] Created infusion light for {workstation.name}");
                 }
                 else if (!enable && activeGlowEffects.TryGetValue(zdoid, out var existingEffect))
                 {
@@ -869,7 +1042,7 @@ namespace BlacksmithingExpanded
                         UnityEngine.Object.Destroy(existingEffect);
 
                     activeGlowEffects.Remove(zdoid);
-                   // Debug.Log($"[BlacksmithingExpanded] Removed infusion light for {workstation.name}");
+                    // Debug.Log($"[BlacksmithingExpanded] Removed infusion light for {workstation.name}");
                 }
             }
             catch (Exception ex)
