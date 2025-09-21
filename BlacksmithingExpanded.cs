@@ -1,6 +1,7 @@
 ﻿using BepInEx;
 using BepInEx.Configuration;
 using HarmonyLib;
+using ItemDataManager;
 using JetBrains.Annotations;
 using ServerSync;
 using SkillManager;
@@ -11,8 +12,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using UnityEngine;
-using ItemDataManager;
-// Removed YamlDotNet dependency - using custom lightweight parser
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
 
 namespace BlacksmithingExpanded
 {
@@ -20,7 +21,7 @@ namespace BlacksmithingExpanded
     public class BlacksmithingExpanded : BaseUnityPlugin
     {
         internal const string ModName = "Blacksmithing Expanded";
-        internal const string ModVersion = "1.0.2";
+        internal const string ModVersion = "1.0.5";
         internal const string ModGUID = "org.bepinex.plugins.blacksmithingexpanded";
 
         private Harmony harmony;
@@ -44,7 +45,11 @@ namespace BlacksmithingExpanded
         private static readonly HashSet<string> blacklistedItems = new();
         private static string configPath;
 
-        // Workstation infusions (unchanged)
+        // YAML sync system (like Jewelcrafting)
+        public static readonly CustomSyncedValue<List<string>> syncedWhitelistItems = new(configSync, "whitelist items", new List<string>());
+        public static readonly CustomSyncedValue<List<string>> syncedBlacklistItems = new(configSync, "blacklist items", new List<string>());
+
+        // Workstation infusions
         internal static Dictionary<ZDOID, WorkstationInfusion> smelterInfusions = new();
         internal static Dictionary<ZDOID, WorkstationInfusion> kilnInfusions = new();
         internal static Dictionary<ZDOID, WorkstationInfusion> blastFurnaceInfusions = new();
@@ -53,7 +58,7 @@ namespace BlacksmithingExpanded
         private static readonly Dictionary<ZDOID, float> originalKilnSpeeds = new();
         private static readonly Dictionary<ZDOID, GameObject> activeGlowEffects = new();
 
-        // Config entries (keeping your existing structure + new ones)
+        // Config entries
         internal static ConfigEntry<float> cfg_SkillGainFactor;
         internal static ConfigEntry<float> cfg_SkillEffectFactor;
         internal static ConfigEntry<int> cfg_InfusionTierInterval;
@@ -69,7 +74,7 @@ namespace BlacksmithingExpanded
         internal static ConfigEntry<bool> cfg_ShowInfusionInTooltip;
         internal static ConfigEntry<float> cfg_FirstCraftBonusXP;
 
-        // NEW YAML Configuration (removed auto-creation)
+        // YAML Configuration
         internal static ConfigEntry<bool> cfg_UseYamlFiltering;
         internal static ConfigEntry<bool> cfg_LogFilteredItems;
 
@@ -79,6 +84,8 @@ namespace BlacksmithingExpanded
         internal static ConfigEntry<float> cfg_DurabilityBonusPerUpgrade;
         internal static ConfigEntry<bool> cfg_RespectOriginalDurability;
         internal static ConfigEntry<float> cfg_MaxDurabilityCap;
+        // NEW: Non-repairable items config
+        internal static ConfigEntry<bool> cfg_AllowNonRepairableItems;
 
         // Armor & Weapons
         internal static ConfigEntry<int> cfg_StatTierInterval;
@@ -87,6 +94,12 @@ namespace BlacksmithingExpanded
         internal static ConfigEntry<float> cfg_ArmorCap;
         internal static ConfigEntry<int> cfg_DamageBonusPerTier;
         internal static ConfigEntry<float> cfg_StatBonusPerUpgrade;
+        // NEW: Percentage-based damage system
+        internal static ConfigEntry<bool> cfg_UsePercentageDamageBonus;
+        internal static ConfigEntry<float> cfg_DamagePercentageBonusPerTier;
+        // NEW: Percentage-based upgrade bonuses - DEFAULTED TO FALSE FOR SAFETY
+        internal static ConfigEntry<bool> cfg_UsePercentageUpgradeBonus;
+        internal static ConfigEntry<float> cfg_StatPercentageBonusPerUpgrade;
 
         // Elemental
         internal static ConfigEntry<bool> cfg_AlwaysAddElementalAtMax;
@@ -98,6 +111,8 @@ namespace BlacksmithingExpanded
         internal static ConfigEntry<float> cfg_SpiritBonusPerTier;
         internal static ConfigEntry<bool> cfg_BoostElementalWeapons;
         internal static ConfigEntry<float> cfg_ElementalWeaponBoostChance;
+        internal static ConfigEntry<bool> cfg_UsePercentageElementalBonus;
+        internal static ConfigEntry<float> cfg_ElementalPercentageBonusPerTier;
 
         // Shields
         internal static ConfigEntry<float> cfg_TimedBlockBonusPerTier;
@@ -113,7 +128,7 @@ namespace BlacksmithingExpanded
 
         private static Sprite s_skillIcon;
 
-        // Data structures for clean organization
+        // Data structures
         private struct ItemBaseStats
         {
             public float armor;
@@ -134,7 +149,6 @@ namespace BlacksmithingExpanded
             public float RemainingTime => Mathf.Max(0f, cfg_InfusionExpireTime.Value - (Time.time - timestamp));
         }
 
-        // YAML Configuration Classes (simplified structure)
         private class ItemFilterConfig
         {
             public List<string> Whitelist { get; set; } = new List<string>();
@@ -179,6 +193,27 @@ namespace BlacksmithingExpanded
             // Initialize YAML filtering system
             InitializeYamlFiltering();
 
+            // Setup sync listeners for YAML data
+            syncedWhitelistItems.ValueChanged += () =>
+            {
+                whitelistedItems.Clear();
+                foreach (var item in syncedWhitelistItems.Value)
+                {
+                    whitelistedItems.Add(item);
+                }
+                Logger.LogDebug($"[BlacksmithingExpanded] Received synced whitelist: {whitelistedItems.Count} items");
+            };
+
+            syncedBlacklistItems.ValueChanged += () =>
+            {
+                blacklistedItems.Clear();
+                foreach (var item in syncedBlacklistItems.Value)
+                {
+                    blacklistedItems.Add(item);
+                }
+                Logger.LogDebug($"[BlacksmithingExpanded] Received synced blacklist: {blacklistedItems.Count} items");
+            };
+
             // Sync skill configs
             if (blacksmithSkill != null)
             {
@@ -188,73 +223,91 @@ namespace BlacksmithingExpanded
                 cfg_SkillEffectFactor.SettingChanged += (_, _) => blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
             }
 
-            // Setup YAML config change handler (simplified)
-            cfg_UseYamlFiltering.SettingChanged += (_, _) => ReloadYamlConfiguration();
+            // Setup YAML config change handler (server only)
+            cfg_UseYamlFiltering.SettingChanged += (_, _) =>
+            {
+                if (ZNet.instance == null || ZNet.instance.IsServer())
+                {
+                    ReloadYamlConfiguration();
+                }
+            };
 
             // Register ItemDataManager type for force loading
             ItemInfo.ForceLoadTypes.Add(typeof(BlacksmithingItemData));
 
             harmony.PatchAll();
-            Logger.LogInfo($"{ModName} v{ModVersion} loaded.");
+            //Logger.LogInfo($"{ModName} v{ModVersion} loaded.");
         }
 
         private void SetupConfigs()
         {
             // General
-            cfg_SkillGainFactor = AddConfig("General", "Skill gain factor", 1f, "Rate at which you gain Blacksmithing XP");
-            cfg_SkillEffectFactor = AddConfig("General", "Skill effect factor", 1f, "Multiplier applied to all skill effects");
-            cfg_InfusionTierInterval = AddConfig("General", "Workstation infusion milestone interval", 10, "Levels per infusion tier");
-            cfg_SmeltingSpeedBonusPerTier = AddConfig("General", "Smelting speed bonus per tier", 0.15f, "Speed bonus per tier (15% = 0.15)");
-            cfg_KilnSpeedBonusPerTier = AddConfig("General", "Kiln speed bonus per tier", 0.15f, "Speed bonus per tier (15% = 0.15)");
-            cfg_InfusionExpireTime = AddConfig("General", "Infusion expire time", 300f, "How long infusions last after adding fuel/ore (seconds)");
-            cfg_ShowInfusionVisualEffect = AddConfig("General", "Show infusion visual effect", true, "Show glowing effect when smelters/kilns are infused"); cfg_SmelterSaveOreChanceAt100 = AddConfig("General", "Ore save chance at 100", 0.2f, "Chance to save ore at level 100");
-            cfg_ChanceExtraItemAt100 = AddConfig("General", "Extra item chance at 100", 0.05f, "Chance for extra item at level 100");
-            cfg_EnableInventoryRepair = AddConfig("General", "Enable inventory repair", true, "Allow repairing from inventory");
-            cfg_InventoryRepairUnlockLevel = AddConfig("General", "Inventory repair unlock level", 70, "Level for inventory repairs");
+            cfg_SkillGainFactor = AddConfig("General", "Skill gain factor", 1f, "Multiplier for blacksmithing XP gain rate (1.5 = 50% faster leveling)");
+            cfg_SkillEffectFactor = AddConfig("General", "Skill effect factor", 1f, "Global multiplier for all blacksmithing bonuses (damage, armor, durability, etc). Higher = stronger effects");
+            cfg_InfusionTierInterval = AddConfig("General", "Workstation infusion milestone interval", 10, "Every X blacksmithing levels unlocks a new tier of smelter/kiln speed bonus");
+            cfg_SmeltingSpeedBonusPerTier = AddConfig("General", "Smelting speed bonus per tier", 0.15f, "Speed bonus per tier - 0.15 = 15% faster smelting. Stacks with each tier");
+            cfg_KilnSpeedBonusPerTier = AddConfig("General", "Kiln speed bonus per tier", 0.15f, "Speed bonus per tier - 0.15 = 15% faster charcoal production. Stacks with each tier");
+            cfg_InfusionExpireTime = AddConfig("General", "Infusion expire time", 300f, "Seconds that speed bonuses last after adding fuel/ore to smelters/kilns (300 = 5 minutes)");
+            cfg_ShowInfusionVisualEffect = AddConfig("General", "Show infusion visual effect", true, "Show orange glowing light effect when smelters/kilns have speed bonuses active");
+            cfg_SmelterSaveOreChanceAt100 = AddConfig("General", "Ore save chance at 100", 0.2f, "At level 100: chance to not consume ore when smelting (0.2 = 20% ore savings)");
+            cfg_ChanceExtraItemAt100 = AddConfig("General", "Extra item chance at 100", 0.05f, "At level 100: chance to get bonus item when crafting (0.05 = 5% chance for double output)");
+            cfg_EnableInventoryRepair = AddConfig("General", "Enable inventory repair", true, "Allow repairing items directly from inventory (bypasses workbench requirement)");
+            cfg_InventoryRepairUnlockLevel = AddConfig("General", "Inventory repair unlock level", 70, "Blacksmithing level required to repair items from inventory without workbench");
+            cfg_UsePercentageUpgradeBonus = AddConfig("General", "Use percentage upgrade bonus", true, "If enabled, upgrade bonuses are percentage-based instead of flat. When disabled, uses flat bonuses");
+            cfg_StatPercentageBonusPerUpgrade = AddConfig("General", "Stat percentage bonus per upgrade", 2f, "Percentage bonus per upgrade level when using percentage upgrade system (2 = 2% per upgrade level)");
 
-            // NEW YAML Configuration Options (simplified)
-            cfg_UseYamlFiltering = AddConfig("Item Filtering", "Use YAML item filtering", false, "Enable YAML-based item whitelist/blacklist system");
-            cfg_LogFilteredItems = AddConfig("Item Filtering", "Log filtered items", false, "Log when items are filtered by whitelist/blacklist");
+            // Item Filtering
+            cfg_UseYamlFiltering = AddConfig("Item Filtering", "Use YAML item filtering", true, "Enable custom whitelist/blacklist system via BlacksmithExpItemList.yml file");
+            cfg_LogFilteredItems = AddConfig("Item Filtering", "Log filtered items", false, "Write to console when items are blocked by whitelist/blacklist filters");
 
             // XP
-            cfg_XPPerCraft = AddConfig("XP", "XP per craft", 5f, "Base XP when crafting");
-            cfg_XPPerSmelt = AddConfig("XP", "XP per smelt", 0.75f, "Base XP when smelting");
-            cfg_XPPerRepair = AddConfig("XP", "XP per repair", 1f, "Base XP when repairing");
-            cfg_XPPerUpgrade = AddConfig("XP", "XP per upgrade", 5f, "XP for upgrading");
-            cfg_FirstCraftBonusXP = AddConfig("XP", "First craft bonus XP", 25f, "Bonus XP for first craft of item type");
+            cfg_XPPerCraft = AddConfig("XP", "XP per craft", 1f, "Base blacksmithing XP gained when crafting any item");
+            cfg_XPPerSmelt = AddConfig("XP", "XP per smelt", 0.75f, "Base blacksmithing XP gained when adding ore to smelters/kilns");
+            cfg_XPPerRepair = AddConfig("XP", "XP per repair", 0.1f, "Base blacksmithing XP gained when repairing items");
+            cfg_XPPerUpgrade = AddConfig("XP", "XP per upgrade", 3f, "Base blacksmithing XP gained when upgrading items at workbenches");
+            cfg_FirstCraftBonusXP = AddConfig("XP", "First craft bonus XP", 10f, "One-time bonus XP when crafting each item type for the first time");
 
             // Tooltips
-            cfg_ShowBlacksmithLevelInTooltip = AddConfig("Tooltip", "Show level in tooltip", true, "Show blacksmith level in tooltip");
-            cfg_ShowInfusionInTooltip = AddConfig("Tooltip", "Show infusion in tooltip", false, "Show elemental infusion in tooltip");
+            cfg_ShowBlacksmithLevelInTooltip = AddConfig("Tooltip", "Show level in tooltip", true, "Display blacksmithing level used to craft item in item tooltips");
+            cfg_ShowInfusionInTooltip = AddConfig("Tooltip", "Show infusion in tooltip", false, "Display elemental infusion type in item tooltips (Fire, Frost, etc.)");
 
-            // Stats
-            cfg_DurabilityTierInterval = AddConfig("Durability", "Durability tier interval", 10, "Levels per durability tier");
-            cfg_DurabilityBonusPerTier = AddConfig("Durability", "Durability bonus per tier", 50f, "Durability bonus per tier");
-            cfg_DurabilityBonusPerUpgrade = AddConfig("Durability", "Durability bonus per upgrade", 50f, "Durability bonus per upgrade");
-            cfg_RespectOriginalDurability = AddConfig("Durability", "Respect original durability", true, "Only boost if base durability > 0");
-            cfg_MaxDurabilityCap = AddConfig("Durability", "Max durability cap", 2000f, "Maximum durability cap");
-            cfg_BoostElementalWeapons = AddConfig("Stats", "Boost elemental weapons", true, "Allow boosting elemental damage on weapons that already have it");
-            cfg_ElementalWeaponBoostChance = AddConfig("Stats", "Elemental weapon boost chance", 0.5f, "Chance to boost elemental vs physical damage on mixed weapons (0.5 = 50/50)");
+            // Durability
+            cfg_DurabilityTierInterval = AddConfig("Durability", "Durability tier interval", 10, "Every X blacksmithing levels unlocks next tier of durability bonuses");
+            cfg_DurabilityBonusPerTier = AddConfig("Durability", "Durability bonus per tier", 50f, "Flat durability points added per tier when crafting items");
+            cfg_DurabilityBonusPerUpgrade = AddConfig("Durability", "Durability bonus per upgrade", 50f, "Extra durability points per item quality level (star rating)");
+            cfg_RespectOriginalDurability = AddConfig("Durability", "Respect original durability", true, "Only boost durability on items that already have durability (prevents boosting consumables/arrows)");
+            cfg_MaxDurabilityCap = AddConfig("Durability", "Max durability cap", 2000f, "Maximum durability any item can reach (0 = no limit)");
+            cfg_AllowNonRepairableItems = AddConfig("Durability", "Allow non-repairable items", false, "Allow blacksmithing bonuses on items with no durability (torches, consumables, etc.)");
 
-            cfg_StatTierInterval = AddConfig("Stats", "Stat tier interval", 20, "Levels per stat tier");
-            cfg_ArmorBonusPerTier = AddConfig("Stats", "Armor bonus per tier", 5f, "Armor bonus per tier");
-            cfg_ArmorBonusPerUpgrade = AddConfig("Stats", "Armor bonus per upgrade", 2f, "Armor bonus per upgrade");
-            cfg_ArmorCap = AddConfig("Stats", "Armor cap", 300f, "Maximum armor value");
-            cfg_DamageBonusPerTier = AddConfig("Stats", "Damage bonus per tier", 10, "Damage bonus per tier");
-            cfg_StatBonusPerUpgrade = AddConfig("Stats", "Stat bonus per upgrade", 8f, "Stat bonus per upgrade");
+            // Combat Stats
+            cfg_BoostElementalWeapons = AddConfig("Stats", "Boost elemental weapons", true, "Allow boosting weapons that already have elemental damage (like Frostner)");
+            cfg_ElementalWeaponBoostChance = AddConfig("Stats", "Elemental weapon boost chance", 0.5f, "For weapons with both physical and elemental damage: chance to boost elemental instead of physical (0.5 = 50% chance)");
 
-            cfg_AlwaysAddElementalAtMax = AddConfig("Elemental", "Add elemental at milestone", true, "Add elemental at milestone");
-            cfg_ElementalUnlockLevel = AddConfig("Elemental", "Elemental unlock level", 100, "Level for elemental bonuses");
-            cfg_FireBonusPerTier = AddConfig("Elemental", "Fire bonus per tier", 3f, "Bonus fire damage per tier (DoT)");
-            cfg_FrostBonusPerTier = AddConfig("Elemental", "Frost bonus per tier", 6f, "Bonus frost damage per tier (burst)");
-            cfg_LightningBonusPerTier = AddConfig("Elemental", "Lightning bonus per tier", 5f, "Bonus lightning damage per tier");
-            cfg_PoisonBonusPerTier = AddConfig("Elemental", "Poison bonus per tier", 2.5f, "Bonus poison damage per tier (DoT)");
-            cfg_SpiritBonusPerTier = AddConfig("Elemental", "Spirit bonus per tier", 4f, "Bonus spirit damage per tier (anti-undead)");
+            cfg_StatTierInterval = AddConfig("Stats", "Stat tier interval", 20, "Every X blacksmithing levels unlocks next tier of damage/armor bonuses");
+            cfg_ArmorBonusPerTier = AddConfig("Stats", "Armor bonus per tier", 3f, "Flat armor points added per tier when crafting armor pieces");
+            cfg_ArmorBonusPerUpgrade = AddConfig("Stats", "Armor bonus per upgrade", 1f, "Extra armor points per item quality level (star rating)");
+            cfg_ArmorCap = AddConfig("Stats", "Armor cap", 300f, "Maximum armor value any piece can reach (0 = no limit)");
+            cfg_UsePercentageDamageBonus = AddConfig("Stats", "Use percentage damage bonus", true, "If enabled, damage bonuses are percentage-based instead of flat. Much more balanced for all weapon types");
+            cfg_DamagePercentageBonusPerTier = AddConfig("Stats", "Damage percentage bonus per tier", 3f, "Percentage damage bonus per tier when using percentage system (3 = 3% per tier)");
+            cfg_DamageBonusPerTier = AddConfig("Stats", "Damage bonus per tier", 5, "Flat damage bonus added per stat tier. Applied to one random damage type (slash/pierce/blunt). Only used if percentage system is disabled");
+            cfg_StatBonusPerUpgrade = AddConfig("Stats", "Stat bonus per upgrade", 4f, "Extra damage/armor bonus per item quality level (star rating). Only used if percentage upgrade system is disabled");
 
-            cfg_TimedBlockBonusPerTier = AddConfig("Shields", "Timed block bonus per tier", 0.05f, "Parry bonus per tier");
-            cfg_TimedBlockBonusPerUpgrade = AddConfig("Shields", "Timed block bonus per upgrade", 0.05f, "Parry bonus per upgrade");
-            cfg_BlockPowerBonusPerTier = AddConfig("Shields", "Block power bonus per tier", 2f, "Block power per tier");
-            cfg_BlockPowerBonusPerUpgrade = AddConfig("Shields", "Block power bonus per upgrade", 1f, "Block power per upgrade");
+            // Elemental Damage
+            cfg_AlwaysAddElementalAtMax = AddConfig("Elemental", "Add elemental at milestone", true, "Automatically add random elemental damage when reaching elemental unlock level");
+            cfg_ElementalUnlockLevel = AddConfig("Elemental", "Elemental unlock level", 100, "Blacksmithing level required to add elemental damage bonuses to weapons");
+            cfg_FireBonusPerTier = AddConfig("Elemental", "Fire bonus per tier", 3f, "Fire damage points per tier (causes burning damage over time)");
+            cfg_FrostBonusPerTier = AddConfig("Elemental", "Frost bonus per tier", 6f, "Frost damage points per tier (causes instant cold damage)");
+            cfg_LightningBonusPerTier = AddConfig("Elemental", "Lightning bonus per tier", 5f, "Lightning damage points per tier (good vs wet enemies)");
+            cfg_PoisonBonusPerTier = AddConfig("Elemental", "Poison bonus per tier", 2.5f, "Poison damage points per tier (causes poison damage over time)");
+            cfg_SpiritBonusPerTier = AddConfig("Elemental", "Spirit bonus per tier", 4f, "Spirit damage points per tier (extra effective vs undead enemies)");
+            cfg_UsePercentageElementalBonus = AddConfig("Elemental", "Use percentage elemental bonus", true, "If enabled, elemental bonuses are percentage-based instead of flat. Much more balanced for all weapon types");
+            cfg_ElementalPercentageBonusPerTier = AddConfig("Elemental", "Elemental percentage bonus per tier", 2f, "Percentage elemental bonus per tier when using percentage system (2 = 2% per tier)");
+
+            // Shield Stats
+            cfg_TimedBlockBonusPerTier = AddConfig("Shields", "Timed block bonus per tier", 0.05f, "Parry/perfect block bonus per tier (0.05 = 5% better parry window/damage)");
+            cfg_TimedBlockBonusPerUpgrade = AddConfig("Shields", "Timed block bonus per upgrade", 0.05f, "Extra parry bonus per shield quality level (star rating)");
+            cfg_BlockPowerBonusPerTier = AddConfig("Shields", "Block power bonus per tier", 2f, "Block strength points per tier (reduces stamina cost when blocking)");
+            cfg_BlockPowerBonusPerUpgrade = AddConfig("Shields", "Block power bonus per upgrade", 1f, "Extra block power per shield quality level (star rating)");
         }
 
         // ================================
@@ -265,15 +318,22 @@ namespace BlacksmithingExpanded
         {
             try
             {
+                if (!File.Exists(configPath))
+                {
+                    Logger.LogInfo($"[BlacksmithingExpanded] YAML not found at {configPath}. Generating default YAML...");
+                    GenerateDefaultYaml();
+                    Logger.LogInfo("[BlacksmithingExpanded] Default YAML created. Please restart the client.");
+                    return;
+                }
+
                 ReloadYamlConfiguration();
-                Logger.LogInfo($"[BlacksmithingExpanded] YAML filtering system initialized. File: {configPath}");
+                Logger.LogDebug($"[BlacksmithingExpanded] YAML filtering system initialized. File: {configPath}");
             }
             catch (Exception ex)
             {
                 Logger.LogError($"[BlacksmithingExpanded] Failed to initialize YAML filtering: {ex}");
             }
         }
-
         private void ReloadYamlConfiguration()
         {
             whitelistedItems.Clear();
@@ -285,74 +345,44 @@ namespace BlacksmithingExpanded
                 return;
             }
 
-            if (!File.Exists(configPath))
-            {
-                Logger.LogWarning($"[BlacksmithingExpanded] YAML file not found: {configPath}");
-                Logger.LogInfo("[BlacksmithingExpanded] Create a BlacksmithExpItemList.yml file in your config folder with the following format:");
-                Logger.LogInfo("Whitelist:\n  - ItemName1\n  - ItemName2\nBlacklist:\n  - ItemName3\n  - ItemName4");
-                return;
-            }
-
             try
             {
-                string[] lines = File.ReadAllLines(configPath);
-                bool inWhitelist = false;
-                bool inBlacklist = false;
+                var deserializer = new DeserializerBuilder()
+                    .WithNamingConvention(PascalCaseNamingConvention.Instance)
+                    .IgnoreUnmatchedProperties()
+                    .Build();
 
-                foreach (string line in lines)
+                string yamlContent = File.ReadAllText(configPath);
+                itemFilterConfig = deserializer.Deserialize<ItemFilterConfig>(yamlContent) ?? new ItemFilterConfig();
+
+                if (itemFilterConfig.Whitelist != null)
                 {
-                    string trimmed = line.Trim();
-
-                    // Skip empty lines and comments
-                    if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#")) continue;
-
-                    // Check for section headers
-                    if (trimmed.StartsWith("Whitelist:", StringComparison.OrdinalIgnoreCase))
+                    foreach (var item in itemFilterConfig.Whitelist.Where(x => !string.IsNullOrWhiteSpace(x)))
                     {
-                        inWhitelist = true;
-                        inBlacklist = false;
-                        continue;
+                        whitelistedItems.Add(item.Trim());
                     }
-                    else if (trimmed.StartsWith("Blacklist:", StringComparison.OrdinalIgnoreCase))
+                }
+
+                if (itemFilterConfig.Blacklist != null)
+                {
+                    foreach (var item in itemFilterConfig.Blacklist.Where(x => !string.IsNullOrWhiteSpace(x)))
                     {
-                        inWhitelist = false;
-                        inBlacklist = true;
-                        continue;
-                    }
-
-                    // Process list items (lines starting with -)
-                    if (trimmed.StartsWith("-"))
-                    {
-                        string itemName = trimmed.Substring(1).Trim();
-
-                        // Skip commented items
-                        if (itemName.StartsWith("#")) continue;
-
-                        if (!string.IsNullOrEmpty(itemName))
-                        {
-                            if (inWhitelist)
-                            {
-                                whitelistedItems.Add(itemName);
-                            }
-                            else if (inBlacklist)
-                            {
-                                blacklistedItems.Add(itemName);
-                            }
-                        }
+                        blacklistedItems.Add(item.Trim());
                     }
                 }
 
                 Logger.LogInfo($"[BlacksmithingExpanded] Loaded YAML config - Whitelist: {whitelistedItems.Count} items, Blacklist: {blacklistedItems.Count} items");
 
                 if (whitelistedItems.Count > 0)
-                {
-                    Logger.LogInfo($"[BlacksmithingExpanded] Whitelisted items: {string.Join(", ", whitelistedItems)}");
-                }
+                    Logger.LogDebug($"[BlacksmithingExpanded] Whitelisted items: {string.Join(", ", whitelistedItems)}");
 
                 if (blacklistedItems.Count > 0)
-                {
-                    Logger.LogInfo($"[BlacksmithingExpanded] Blacklisted items: {string.Join(", ", blacklistedItems)}");
-                }
+                    Logger.LogDebug($"[BlacksmithingExpanded] Blacklisted items: {string.Join(", ", blacklistedItems)}");
+            }
+            catch (YamlDotNet.Core.YamlException yamlEx)
+            {
+                Logger.LogError($"[BlacksmithingExpanded] YAML parsing error: {yamlEx.Message}");
+                Logger.LogError($"[BlacksmithingExpanded] Check your YAML syntax in: {configPath}");
             }
             catch (Exception ex)
             {
@@ -360,35 +390,138 @@ namespace BlacksmithingExpanded
             }
         }
 
+        private void GenerateDefaultYaml()
+        {
+            try
+            {
+                var defaultYaml = @"# If whitelist is empty:
+# Items not on blacklist → Enhanced (normal mod behavior)
+# Items on blacklist → Not enhanced
+
+# If whitelist has items:
+# Items on whitelist → Enhanced
+# Items NOT on whitelist → Not enhanced (regardless of blacklist)
+
+Whitelist:
+
+Blacklist:
+  - Club
+  - AxeStone
+  - Torch
+  - Tankard
+  - TankardAnniversary
+  - TrinketBronzeHealth
+  - TrinketBronzeStamina
+  - TrinketCarapaceEitr
+  - TrinketBlackDamageHealth
+  - TrinketFlametalEitr
+  - TrinketChitinSwim
+  - TrinketFlametalStaminaHealth
+  - TrinketIronHealth
+  - TrinketIronStamina
+  - TrinketScaleStaminaDamage
+  - TrinketSilverDamage
+  - TrinketSilverResist
+  - Demister
+  - DvergrKey
+  - SaddleAsksvin
+  - SaddleLox
+";
+                File.WriteAllText(configPath, defaultYaml);
+                Logger.LogDebug($"[BlacksmithingExpanded] Created default YAML file at {configPath}");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError($"[BlacksmithingExpanded] Failed to create default YAML: {ex}");
+            }
+        }
+
+
         internal static bool IsItemAllowed(ItemDrop.ItemData item)
         {
             if (!cfg_UseYamlFiltering.Value) return true;
-            if (item?.m_shared?.m_name == null) return false;
+            if (item?.m_shared == null) return false;
 
-            string itemName = item.m_shared.m_name;
+            // Use prefab name instead of localization token
+            string prefabName = GetItemPrefabName(item);
+            if (string.IsNullOrEmpty(prefabName))
+            {
+                if (cfg_LogFilteredItems.Value)
+                {
+                    Debug.Log($"[BlacksmithingExpanded] Could not determine prefab name for item - allowing by default");
+                }
+                return true;
+            }
 
             // If whitelist has entries, only allow whitelisted items
             if (whitelistedItems.Count > 0)
             {
-                bool allowed = whitelistedItems.Contains(itemName);
-                if (cfg_LogFilteredItems.Value && !allowed)
+                bool allowed = whitelistedItems.Contains(prefabName);
+                if (cfg_LogFilteredItems.Value)
                 {
-                    Debug.Log($"[BlacksmithingExpanded] Item '{itemName}' not in whitelist - filtering out");
+                    if (allowed)
+                    {
+                        Debug.Log($"[BlacksmithingExpanded] Item prefab '{prefabName}' found in whitelist - allowing bonuses");
+                    }
+                    else
+                    {
+                        Debug.Log($"[BlacksmithingExpanded] Item prefab '{prefabName}' not in whitelist - filtering out");
+                    }
                 }
                 return allowed;
             }
 
             // If no whitelist, check blacklist
-            if (blacklistedItems.Contains(itemName))
+            if (blacklistedItems.Contains(prefabName))
             {
                 if (cfg_LogFilteredItems.Value)
                 {
-                    Debug.Log($"[BlacksmithingExpanded] Item '{itemName}' is blacklisted - filtering out");
+                    Debug.Log($"[BlacksmithingExpanded] Item prefab '{prefabName}' is blacklisted - filtering out");
                 }
                 return false;
             }
 
+            // Item is allowed (not blacklisted and no whitelist restrictions)
+            if (cfg_LogFilteredItems.Value)
+            {
+                Debug.Log($"[BlacksmithingExpanded] Item prefab '{prefabName}' allowed (not blacklisted)");
+            }
             return true;
+        }
+
+        private static string GetItemPrefabName(ItemDrop.ItemData item)
+        {
+            try
+            {
+                // Try to get the prefab name from the item's drop prefab
+                if (item.m_dropPrefab != null)
+                {
+                    return item.m_dropPrefab.name;
+                }
+
+                // Fallback: try to find the prefab in the ZNetScene
+                var prefab = ObjectDB.instance?.GetItemPrefab(item.m_shared.m_name);
+                if (prefab != null)
+                {
+                    return prefab.name;
+                }
+
+                // Last resort: use the shared name but try to clean it
+                string sharedName = item.m_shared.m_name;
+                if (sharedName.StartsWith("$item_"))
+                {
+                    // Convert $item_club to Club (capitalize first letter)
+                    string cleanName = sharedName.Substring(6); // Remove "$item_"
+                    return char.ToUpper(cleanName[0]) + cleanName.Substring(1);
+                }
+
+                return sharedName;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[BlacksmithingExpanded] Error getting prefab name: {ex}");
+                return item.m_shared?.m_name ?? "Unknown";
+            }
         }
 
         // ================================
@@ -397,7 +530,6 @@ namespace BlacksmithingExpanded
 
         private class BlacksmithingItemData : ItemData
         {
-            // Track which items have active modifications to avoid conflicts
             public static readonly Dictionary<ItemDrop.ItemData.SharedData, BlacksmithingItemData> activeItems = new();
 
             [SerializeField] public int level = 0;
@@ -488,7 +620,7 @@ namespace BlacksmithingExpanded
         }
 
         // ================================
-        // CORE FUNCTIONALITY - SIMPLIFIED
+        // CORE FUNCTIONALITY
         // ================================
 
         internal static int GetPlayerBlacksmithingLevel(Player player)
@@ -512,7 +644,7 @@ namespace BlacksmithingExpanded
             {
                 float adjusted = amount * cfg_SkillGainFactor.Value;
                 SkillManager.SkillExtensions.RaiseSkill(player, "Blacksmithing", adjusted);
-                Debug.Log($"[BlacksmithingExpanded] Gave {adjusted:F2} XP to {player.GetPlayerName()}");
+                //Debug.Log($"[BlacksmithingExpanded] Gave {adjusted:F2} XP to {player.GetPlayerName()}");
             }
             catch (Exception ex)
             {
@@ -532,7 +664,6 @@ namespace BlacksmithingExpanded
                     durability = item.m_shared.m_maxDurability,
                     resistances = new List<HitData.DamageModPair>(item.m_shared.m_damageModifiers)
                 };
-                //Debug.Log($"[BlacksmithingExpanded] Cached base stats for {key}");
             }
         }
 
@@ -551,7 +682,7 @@ namespace BlacksmithingExpanded
             if (item?.m_shared == null || level <= 0) return;
             if (item.m_shared.m_maxStackSize > 1) return; // Skip stackables
 
-            // NEW: Check if item is allowed by YAML filtering
+            // Check if item is allowed by YAML filtering
             if (!IsItemAllowed(item))
             {
                 if (cfg_LogFilteredItems.Value)
@@ -562,6 +693,50 @@ namespace BlacksmithingExpanded
             }
 
             var baseStats = GetBaseStats(item);
+
+            // Check non-repairable items logic
+            bool hasOriginalDurability = baseStats.durability > 0f;
+
+            // If item has no durability and we don't allow non-repairable items, skip it
+            if (!hasOriginalDurability && !cfg_AllowNonRepairableItems.Value)
+            {
+                if (cfg_LogFilteredItems.Value)
+                {
+                    Debug.Log($"[BlacksmithingExpanded] Item '{item.m_shared.m_name}' has no durability and non-repairable items are disabled - skipping");
+                }
+                return;
+            }
+
+            // Check if this item already has blacksmithing data to prevent double-application
+            var existingData = item.Data().Get<BlacksmithingItemData>();
+            string preservedInfusion = "";
+
+            if (existingData != null && existingData.level > 0)
+            {
+                // Item already has blacksmithing bonuses applied
+                // For upgrades, we need to recalculate bonuses based on new quality level
+                // but we should clear existing bonuses first to prevent stacking
+
+                Debug.Log($"[BlacksmithingExpanded] Item '{item.m_shared.m_name}' already has blacksmithing data (level {existingData.level}). Recalculating for quality {item.m_quality}...");
+
+                // PRESERVE the original infusion type
+                preservedInfusion = existingData.infusion;
+
+                // Clear existing bonuses from the data object before recalculating
+                existingData.armorBonus = 0f;
+                existingData.damageBlunt = 0f;
+                existingData.damageSlash = 0f;
+                existingData.damagePierce = 0f;
+                existingData.damageFire = 0f;
+                existingData.damageFrost = 0f;
+                existingData.damageLightning = 0f;
+                existingData.damagePoison = 0f;
+                existingData.damageSpirit = 0f;
+                existingData.blockPowerBonus = 0f;
+                existingData.timedBlockBonus = 0f;
+                // Don't clear infusion here - we'll restore it below
+            }
+
             int statTier = level / cfg_StatTierInterval.Value;
             int durabilityTier = level / cfg_DurabilityTierInterval.Value;
 
@@ -571,35 +746,47 @@ namespace BlacksmithingExpanded
             data.baseDurability = baseStats.durability;
 
             // Apply durability bonus
-            if (!cfg_RespectOriginalDurability.Value || baseStats.durability > 0f)
+            if (hasOriginalDurability || cfg_AllowNonRepairableItems.Value)
             {
-                float durabilityBonus = (durabilityTier * cfg_DurabilityBonusPerTier.Value) +
-                                        (item.m_quality * cfg_DurabilityBonusPerUpgrade.Value);
+                bool shouldApplyDurability = (cfg_RespectOriginalDurability.Value && hasOriginalDurability) ||
+                                           !cfg_RespectOriginalDurability.Value ||
+                                           cfg_AllowNonRepairableItems.Value;
 
-                data.maxDurability = baseStats.durability + durabilityBonus;
+                if (shouldApplyDurability)
+                {
+                    float durabilityBonus = (durabilityTier * cfg_DurabilityBonusPerTier.Value) +
+                                            (item.m_quality * cfg_DurabilityBonusPerUpgrade.Value);
 
-                if (cfg_MaxDurabilityCap.Value > 0f)
-                    data.maxDurability = Mathf.Min(data.maxDurability, cfg_MaxDurabilityCap.Value);
+                    data.maxDurability = baseStats.durability + durabilityBonus;
+
+                    if (cfg_MaxDurabilityCap.Value > 0f)
+                        data.maxDurability = Mathf.Min(data.maxDurability, cfg_MaxDurabilityCap.Value);
+                }
             }
 
-            // Apply damage bonuses
-            float damageBonus = statTier * cfg_DamageBonusPerTier.Value;
-            float upgradeDamageBonus = item.m_quality * cfg_StatBonusPerUpgrade.Value;
-            float totalDamageBonus = damageBonus + upgradeDamageBonus;
+            // Apply damage bonuses with simplified calculation
+            ApplyDamageBonuses(item, baseStats, statTier, data);
 
-            if (totalDamageBonus > 0)
-            {
-                ApplyRandomDamageBonus(item, baseStats, totalDamageBonus, data);
-            }
-
-            // Apply armor bonus
+            // Apply armor bonus with percentage upgrade support
             if (baseStats.armor > 0f)
             {
-                float armorBonus = (statTier * cfg_ArmorBonusPerTier.Value) +
-                                 (item.m_quality * cfg_ArmorBonusPerUpgrade.Value);
+                float armorTierBonus = statTier * cfg_ArmorBonusPerTier.Value;
+                float armorUpgradeBonus;
 
-                data.armorBonus = armorBonus;
-                if (cfg_ArmorCap.Value > 0f && baseStats.armor + armorBonus > cfg_ArmorCap.Value)
+                if (cfg_UsePercentageUpgradeBonus.Value)
+                {
+                    // Percentage-based upgrade bonus for armor
+                    float upgradePercentage = item.m_quality * cfg_StatPercentageBonusPerUpgrade.Value / 100f;
+                    armorUpgradeBonus = baseStats.armor * upgradePercentage;
+                }
+                else
+                {
+                    // Flat upgrade bonus for armor (SAFE DEFAULT - maintains v1.0.4 behavior)
+                    armorUpgradeBonus = item.m_quality * cfg_ArmorBonusPerUpgrade.Value;
+                }
+
+                data.armorBonus = armorTierBonus + armorUpgradeBonus;
+                if (cfg_ArmorCap.Value > 0f && baseStats.armor + data.armorBonus > cfg_ArmorCap.Value)
                     data.armorBonus = cfg_ArmorCap.Value - baseStats.armor;
             }
 
@@ -622,33 +809,220 @@ namespace BlacksmithingExpanded
             // Apply elemental infusion
             if (level >= cfg_ElementalUnlockLevel.Value && cfg_AlwaysAddElementalAtMax.Value && item.IsWeapon())
             {
-                ApplyElementalInfusion(item, baseStats, statTier, data);
+                // Check if we have a preserved infusion from previous upgrade
+                if (!string.IsNullOrEmpty(preservedInfusion))
+                {
+                    // Calculate effective tier for elemental infusion
+                    float elementalEffectiveTier = CalculateElementalEffectiveTier(statTier, item.m_quality);
+
+                    // Reapply the same infusion type with proper scaling
+                    ApplySpecificInfusion(preservedInfusion, baseStats, elementalEffectiveTier, data);
+                    Debug.Log($"[BlacksmithingExpanded] Preserved and scaled {preservedInfusion} infusion for {item.m_shared.m_name} (tier: {elementalEffectiveTier:F1})");
+                }
+                else
+                {
+                    // Check if we already applied elemental bonuses through damage system
+                    bool appliedElementalBonus = HasElementalDamageBonus(data);
+                    if (!appliedElementalBonus)
+                    {
+                        // This is a new item, apply random infusion
+                        float elementalEffectiveTier = CalculateElementalEffectiveTier(statTier, item.m_quality);
+                        ApplyElementalInfusion(item, baseStats, elementalEffectiveTier, data);
+                    }
+                }
             }
 
             // Save and load to apply changes
             data.Save();
             data.Load();
 
-            Debug.Log($"[BlacksmithingExpanded] Applied bonuses to {item.m_shared.m_name}: level={level}, tier={statTier}");
+            Debug.Log($"[BlacksmithingExpanded] Applied bonuses to {item.m_shared.m_name}: level={level}, tier={statTier}, quality={item.m_quality}");
         }
 
-        private static void ApplyRandomDamageBonus(ItemDrop.ItemData item, ItemBaseStats baseStats, float bonus, BlacksmithingItemData data)
+        // SIMPLIFIED: Apply damage bonuses with cleaner logic
+        private static void ApplyDamageBonuses(ItemDrop.ItemData item, ItemBaseStats baseStats, int statTier, BlacksmithingItemData data)
+        {
+            // Calculate tier bonus
+            float tierBonus;
+            if (cfg_UsePercentageDamageBonus.Value)
+            {
+                tierBonus = statTier * cfg_DamagePercentageBonusPerTier.Value / 100f;
+            }
+            else
+            {
+                tierBonus = statTier * cfg_DamageBonusPerTier.Value;
+            }
+
+            // Calculate upgrade bonus
+            float upgradeBonus = 0f;
+            if (item.m_quality > 0)
+            {
+                if (cfg_UsePercentageUpgradeBonus.Value)
+                {
+                    upgradeBonus = item.m_quality * cfg_StatPercentageBonusPerUpgrade.Value / 100f;
+                }
+                else
+                {
+                    // Flat upgrade bonus - convert to equivalent percentage if main system is percentage
+                    if (cfg_UsePercentageDamageBonus.Value)
+                    {
+                        // Convert flat upgrade to percentage equivalent based on total base damage
+                        float totalBaseDamage = GetTotalPhysicalDamage(baseStats);
+                        if (totalBaseDamage > 0f)
+                        {
+                            upgradeBonus = (item.m_quality * cfg_StatBonusPerUpgrade.Value) / totalBaseDamage;
+                        }
+                    }
+                    else
+                    {
+                        upgradeBonus = item.m_quality * cfg_StatBonusPerUpgrade.Value;
+                    }
+                }
+            }
+
+            // Apply total bonus
+            ApplyRandomDamageBonus(item, baseStats, tierBonus, upgradeBonus, data);
+        }
+
+        // SIMPLIFIED: Calculate effective tier for elemental bonuses
+        private static float CalculateElementalEffectiveTier(int statTier, int quality)
+        {
+            float tierComponent = statTier;
+
+            if (cfg_UsePercentageUpgradeBonus.Value)
+            {
+                // Convert percentage upgrade to tier equivalent
+                tierComponent += quality * cfg_StatPercentageBonusPerUpgrade.Value / cfg_ElementalPercentageBonusPerTier.Value;
+            }
+            else
+            {
+                // Convert flat upgrade to tier equivalent  
+                tierComponent += quality * cfg_StatBonusPerUpgrade.Value / cfg_ElementalPercentageBonusPerTier.Value;
+            }
+
+            return tierComponent;
+        }
+
+        // Add this helper method:
+        private static bool HasElementalDamageBonus(BlacksmithingItemData data)
+        {
+            return data.damageFire > 0f || data.damageFrost > 0f || data.damageLightning > 0f ||
+                   data.damagePoison > 0f || data.damageSpirit > 0f;
+        }
+
+        // Add this method to apply a specific infusion type:
+        private static void ApplySpecificInfusion(string infusionType, ItemBaseStats baseStats, float effectiveTiers, BlacksmithingItemData data)
+        {
+            if (cfg_UsePercentageElementalBonus.Value)
+            {
+                // Percentage-based elemental system
+                float percentageBonus = effectiveTiers * cfg_ElementalPercentageBonusPerTier.Value / 100f;
+                float totalBaseDamage = GetTotalPhysicalDamage(baseStats); // Use total damage
+
+                switch (infusionType)
+                {
+                    case "Fire":
+                        data.damageFire = totalBaseDamage * percentageBonus;
+                        break;
+                    case "Frost":
+                        data.damageFrost = totalBaseDamage * percentageBonus;
+                        break;
+                    case "Lightning":
+                        data.damageLightning = totalBaseDamage * percentageBonus;
+                        break;
+                    case "Poison":
+                        data.damagePoison = totalBaseDamage * percentageBonus;
+                        break;
+                    case "Spirit":
+                        data.damageSpirit = totalBaseDamage * percentageBonus;
+                        break;
+                }
+            }
+            else
+            {
+                // Flat bonus system
+                switch (infusionType)
+                {
+                    case "Fire":
+                        data.damageFire = effectiveTiers * cfg_FireBonusPerTier.Value;
+                        break;
+                    case "Frost":
+                        data.damageFrost = effectiveTiers * cfg_FrostBonusPerTier.Value;
+                        break;
+                    case "Lightning":
+                        data.damageLightning = effectiveTiers * cfg_LightningBonusPerTier.Value;
+                        break;
+                    case "Poison":
+                        data.damagePoison = effectiveTiers * cfg_PoisonBonusPerTier.Value;
+                        break;
+                    case "Spirit":
+                        data.damageSpirit = effectiveTiers * cfg_SpiritBonusPerTier.Value;
+                        break;
+                }
+            }
+
+            data.infusion = infusionType;
+        }
+
+        // FIXED: Helper method to calculate total physical damage for multi-damage-type weapons
+        private static float GetTotalPhysicalDamage(ItemBaseStats baseStats)
+        {
+            return baseStats.damages.m_blunt + baseStats.damages.m_slash + baseStats.damages.m_pierce;
+        }
+
+        // UPDATED: Apply random damage bonus with separate tier and upgrade bonuses
+        private static void ApplyRandomDamageBonus(ItemDrop.ItemData item, ItemBaseStats baseStats, float tierBonus, float upgradeBonus, BlacksmithingItemData data)
         {
             var validTypes = new List<System.Action>();
 
-            // Always include physical damage types if they exist
-            if (baseStats.damages.m_blunt > 0f) validTypes.Add(() => data.damageBlunt = bonus);
-            if (baseStats.damages.m_slash > 0f) validTypes.Add(() => data.damageSlash = bonus);
-            if (baseStats.damages.m_pierce > 0f) validTypes.Add(() => data.damagePierce = bonus);
-
-            // Conditionally include elemental types if config allows and they exist
-            if (cfg_BoostElementalWeapons.Value)
+            if (cfg_UsePercentageDamageBonus.Value)
             {
-                if (baseStats.damages.m_fire > 0f) validTypes.Add(() => data.damageFire = bonus);
-                if (baseStats.damages.m_frost > 0f) validTypes.Add(() => data.damageFrost = bonus);
-                if (baseStats.damages.m_lightning > 0f) validTypes.Add(() => data.damageLightning = bonus);
-                if (baseStats.damages.m_poison > 0f) validTypes.Add(() => data.damagePoison = bonus);
-                if (baseStats.damages.m_spirit > 0f) validTypes.Add(() => data.damageSpirit = bonus);
+                // Percentage-based damage system with TOTAL damage calculation (FIXED)
+                float totalPercentageBonus = tierBonus + upgradeBonus;
+                float totalBaseDamage = GetTotalPhysicalDamage(baseStats); // Use total damage instead of max
+
+                // Always include physical damage types if they exist
+                if (baseStats.damages.m_blunt > 0f)
+                    validTypes.Add(() => data.damageBlunt = totalBaseDamage * totalPercentageBonus);
+                if (baseStats.damages.m_slash > 0f)
+                    validTypes.Add(() => data.damageSlash = totalBaseDamage * totalPercentageBonus);
+                if (baseStats.damages.m_pierce > 0f)
+                    validTypes.Add(() => data.damagePierce = totalBaseDamage * totalPercentageBonus);
+
+                // Conditionally include elemental types if config allows and they exist
+                if (cfg_BoostElementalWeapons.Value)
+                {
+                    if (baseStats.damages.m_fire > 0f)
+                        validTypes.Add(() => data.damageFire = totalBaseDamage * totalPercentageBonus);
+                    if (baseStats.damages.m_frost > 0f)
+                        validTypes.Add(() => data.damageFrost = totalBaseDamage * totalPercentageBonus);
+                    if (baseStats.damages.m_lightning > 0f)
+                        validTypes.Add(() => data.damageLightning = totalBaseDamage * totalPercentageBonus);
+                    if (baseStats.damages.m_poison > 0f)
+                        validTypes.Add(() => data.damagePoison = totalBaseDamage * totalPercentageBonus);
+                    if (baseStats.damages.m_spirit > 0f)
+                        validTypes.Add(() => data.damageSpirit = totalBaseDamage * totalPercentageBonus);
+                }
+            }
+            else
+            {
+                // Flat damage system (legacy)
+                float totalFlatBonus = tierBonus + upgradeBonus;
+
+                // Always include physical damage types if they exist
+                if (baseStats.damages.m_blunt > 0f) validTypes.Add(() => data.damageBlunt = totalFlatBonus);
+                if (baseStats.damages.m_slash > 0f) validTypes.Add(() => data.damageSlash = totalFlatBonus);
+                if (baseStats.damages.m_pierce > 0f) validTypes.Add(() => data.damagePierce = totalFlatBonus);
+
+                // Conditionally include elemental types if config allows and they exist
+                if (cfg_BoostElementalWeapons.Value)
+                {
+                    if (baseStats.damages.m_fire > 0f) validTypes.Add(() => data.damageFire = totalFlatBonus);
+                    if (baseStats.damages.m_frost > 0f) validTypes.Add(() => data.damageFrost = totalFlatBonus);
+                    if (baseStats.damages.m_lightning > 0f) validTypes.Add(() => data.damageLightning = totalFlatBonus);
+                    if (baseStats.damages.m_poison > 0f) validTypes.Add(() => data.damagePoison = totalFlatBonus);
+                    if (baseStats.damages.m_spirit > 0f) validTypes.Add(() => data.damageSpirit = totalFlatBonus);
+                }
             }
 
             if (validTypes.Count > 0)
@@ -657,50 +1031,123 @@ namespace BlacksmithingExpanded
             }
         }
 
-        private static void ApplyElementalInfusion(ItemDrop.ItemData item, ItemBaseStats baseStats, int tier, BlacksmithingItemData data)
+        private static void ApplyElementalInfusion(ItemDrop.ItemData item, ItemBaseStats baseStats, float effectiveTiers, BlacksmithingItemData data)
         {
-            var elements = new List<(string name, System.Action apply)>
-    {
-        ("Fire", () => {
-            data.damageFire = tier * cfg_FireBonusPerTier.Value;
-            data.infusion = "Fire";
-        }),
-        ("Frost", () => {
-            data.damageFrost = tier * cfg_FrostBonusPerTier.Value;
-            data.infusion = "Frost";
-        }),
-        ("Lightning", () => {
-            data.damageLightning = tier * cfg_LightningBonusPerTier.Value;
-            data.infusion = "Lightning";
-        }),
-        ("Poison", () => {
-            data.damagePoison = tier * cfg_PoisonBonusPerTier.Value;
-            data.infusion = "Poison";
-        }),
-        ("Spirit", () => {
-            data.damageSpirit = tier * cfg_SpiritBonusPerTier.Value;
-            data.infusion = "Spirit";
-        })
-    };
+            var elements = new List<(string name, System.Action apply)>();
 
-            // Filter out elements already present in base stats
-            elements.RemoveAll(e => e.name == "Fire" && baseStats.damages.m_fire > 0f);
-            elements.RemoveAll(e => e.name == "Frost" && baseStats.damages.m_frost > 0f);
-            elements.RemoveAll(e => e.name == "Lightning" && baseStats.damages.m_lightning > 0f);
-            elements.RemoveAll(e => e.name == "Poison" && baseStats.damages.m_poison > 0f);
-            elements.RemoveAll(e => e.name == "Spirit" && baseStats.damages.m_spirit > 0f);
+            if (cfg_UsePercentageElementalBonus.Value)
+            {
+                // Percentage-based elemental system
+                float percentageBonus = effectiveTiers * cfg_ElementalPercentageBonusPerTier.Value / 100f;
+                float totalBaseDamage = GetTotalPhysicalDamage(baseStats); // Use total damage
+
+                // Only add elements that don't already exist in base stats
+                if (baseStats.damages.m_fire <= 0f)
+                {
+                    elements.Add(("Fire", () => {
+                        data.damageFire = totalBaseDamage * percentageBonus;
+                        data.infusion = "Fire";
+                    }
+                    ));
+                }
+
+                if (baseStats.damages.m_frost <= 0f)
+                {
+                    elements.Add(("Frost", () => {
+                        data.damageFrost = totalBaseDamage * percentageBonus;
+                        data.infusion = "Frost";
+                    }
+                    ));
+                }
+
+                if (baseStats.damages.m_lightning <= 0f)
+                {
+                    elements.Add(("Lightning", () => {
+                        data.damageLightning = totalBaseDamage * percentageBonus;
+                        data.infusion = "Lightning";
+                    }
+                    ));
+                }
+
+                if (baseStats.damages.m_poison <= 0f)
+                {
+                    elements.Add(("Poison", () => {
+                        data.damagePoison = totalBaseDamage * percentageBonus;
+                        data.infusion = "Poison";
+                    }
+                    ));
+                }
+
+                if (baseStats.damages.m_spirit <= 0f)
+                {
+                    elements.Add(("Spirit", () => {
+                        data.damageSpirit = totalBaseDamage * percentageBonus;
+                        data.infusion = "Spirit";
+                    }
+                    ));
+                }
+            }
+            else
+            {
+                // Original flat bonus system
+                if (baseStats.damages.m_fire <= 0f)
+                {
+                    elements.Add(("Fire", () => {
+                        data.damageFire = effectiveTiers * cfg_FireBonusPerTier.Value;
+                        data.infusion = "Fire";
+                    }
+                    ));
+                }
+
+                if (baseStats.damages.m_frost <= 0f)
+                {
+                    elements.Add(("Frost", () => {
+                        data.damageFrost = effectiveTiers * cfg_FrostBonusPerTier.Value;
+                        data.infusion = "Frost";
+                    }
+                    ));
+                }
+
+                if (baseStats.damages.m_lightning <= 0f)
+                {
+                    elements.Add(("Lightning", () => {
+                        data.damageLightning = effectiveTiers * cfg_LightningBonusPerTier.Value;
+                        data.infusion = "Lightning";
+                    }
+                    ));
+                }
+
+                if (baseStats.damages.m_poison <= 0f)
+                {
+                    elements.Add(("Poison", () => {
+                        data.damagePoison = effectiveTiers * cfg_PoisonBonusPerTier.Value;
+                        data.infusion = "Poison";
+                    }
+                    ));
+                }
+
+                if (baseStats.damages.m_spirit <= 0f)
+                {
+                    elements.Add(("Spirit", () => {
+                        data.damageSpirit = effectiveTiers * cfg_SpiritBonusPerTier.Value;
+                        data.infusion = "Spirit";
+                    }
+                    ));
+                }
+            }
 
             if (elements.Count > 0)
             {
                 var selected = elements[UnityEngine.Random.Range(0, elements.Count)];
                 selected.apply();
-                Debug.Log($"[BlacksmithingExpanded] Infused {item.m_shared.m_name} with {data.infusion}");
+
+                string bonusType = cfg_UsePercentageElementalBonus.Value ? "%" : "flat";
+                Debug.Log($"[BlacksmithingExpanded] Infused {item.m_shared.m_name} with {data.infusion} ({bonusType} bonus system)");
             }
         }
 
-
         // ================================
-        // HARMONY PATCHES - SIMPLIFIED
+        // HARMONY PATCHES
         // ================================
 
         [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.DoCrafting))]
@@ -771,10 +1218,11 @@ namespace BlacksmithingExpanded
         }
 
         // ================================
-        // WORKSTATION PATCHES - SMELTSPEED
+        // WORKSTATION PATCHES
         // ================================
+
         [HarmonyPatch(typeof(Smelter), "OnAddOre")]
-        public static class Patch_Smelter_AddOre_CleanVisual
+        public static class Patch_Smelter_AddOre
         {
             static void Postfix(Smelter __instance, Humanoid user, bool __result)
             {
@@ -788,18 +1236,17 @@ namespace BlacksmithingExpanded
                 // Identify workstation type
                 bool isKiln = __instance.m_name.Contains("charcoal_kiln");
                 bool isBlastFurnace = __instance.m_name.Contains("blastfurnace");
-                bool isSmelter = !isKiln && !isBlastFurnace;
 
                 int level = GetPlayerBlacksmithingLevel(player);
                 int tier = level / cfg_InfusionTierInterval.Value;
 
                 if (tier <= 0) return;
 
-                // Calculate speed bonus (use smelter values for blast furnace)
+                // Calculate speed bonus
                 float speedBonusPerTier = isKiln ? cfg_KilnSpeedBonusPerTier.Value : cfg_SmeltingSpeedBonusPerTier.Value;
                 float speedMultiplier = 1f + (tier * speedBonusPerTier);
 
-                // Create enhanced infusion
+                // Create infusion
                 var infusion = new WorkstationInfusion
                 {
                     tier = tier,
@@ -815,17 +1262,13 @@ namespace BlacksmithingExpanded
                 {
                     if (kilnInfusions.ContainsKey(zdo.m_uid))
                     {
-                        // UPDATE existing infusion timestamp instead of replacing
                         kilnInfusions[zdo.m_uid].timestamp = Time.time;
                         kilnInfusions[zdo.m_uid].tier = tier;
-                        //Debug.Log($"[BlacksmithingExpanded] Updated existing kiln infusion timestamp");
                     }
                     else
                     {
-                        // CREATE new infusion
                         kilnInfusions[zdo.m_uid] = infusion;
                         isNewInfusion = true;
-                        //Debug.Log($"[BlacksmithingExpanded] Created new kiln infusion");
                     }
                 }
                 else if (isBlastFurnace)
@@ -855,7 +1298,7 @@ namespace BlacksmithingExpanded
                 // Apply speed immediately
                 __instance.m_secPerProduct = infusion.bonusSpeed;
 
-                // Only create light effect for NEW infusions, not updates
+                // Only create light effect for NEW infusions
                 if (isNewInfusion)
                 {
                     ManageInfusionGlow(__instance.transform, zdo.m_uid, true);
@@ -868,9 +1311,8 @@ namespace BlacksmithingExpanded
             }
         }
 
-        // Modify the UpdateSmelter patch to handle blast furnaces
         [HarmonyPatch(typeof(Smelter), "UpdateSmelter")]
-        public static class Patch_Smelter_Update_CleanVisual
+        public static class Patch_Smelter_Update
         {
             static void Prefix(Smelter __instance)
             {
@@ -916,7 +1358,6 @@ namespace BlacksmithingExpanded
                         blastFurnace.m_secPerProduct = originalBlastFurnaceSpeeds[zdo.m_uid];
                         blastFurnaceInfusions.Remove(zdo.m_uid);
                         ManageInfusionGlow(blastFurnace.transform, zdo.m_uid, false);
-                        //Debug.Log($"[BlacksmithingExpanded] Blast furnace infusion expired for {zdo.m_uid}");
                     }
                     else
                     {
@@ -929,6 +1370,7 @@ namespace BlacksmithingExpanded
                     blastFurnace.m_secPerProduct = originalBlastFurnaceSpeeds[zdo.m_uid];
                 }
             }
+
             private static void HandleKilnInfusion(Smelter kiln, ZDO zdo)
             {
                 if (!originalKilnSpeeds.ContainsKey(zdo.m_uid))
@@ -938,24 +1380,17 @@ namespace BlacksmithingExpanded
 
                 if (kilnInfusions.TryGetValue(zdo.m_uid, out var infusion))
                 {
-                    // Check if kiln is still operational (has fuel OR is actively baking)
                     bool kilnStillRunning = kiln.GetFuel() > 0f || kiln.GetBakeTimer() > 0f;
 
-                    // Expire if time limit reached OR kiln stopped running
                     if (infusion.IsExpired || !kilnStillRunning)
                     {
                         kiln.m_secPerProduct = originalKilnSpeeds[zdo.m_uid];
                         kilnInfusions.Remove(zdo.m_uid);
                         ManageInfusionGlow(kiln.transform, zdo.m_uid, false);
-
-                        string reason = infusion.IsExpired ? "time limit" : "kiln stopped running";
-                        //Debug.Log($"[BlacksmithingExpanded] Kiln infusion expired due to {reason}");
                     }
                     else
                     {
                         kiln.m_secPerProduct = infusion.bonusSpeed;
-                        float remainingTime = infusion.RemainingTime;
-                        //Debug.Log($"[BlacksmithingExpanded] Kiln infusion active - {remainingTime:F0}s remaining, Fuel={kiln.GetFuel()}, BakeTimer={kiln.GetBakeTimer():F1}");
                     }
                 }
                 else
@@ -1018,23 +1453,19 @@ namespace BlacksmithingExpanded
             {
                 if (enable && !activeGlowEffects.ContainsKey(zdoid))
                 {
-                    // Create a new GameObject to hold the light
                     var glowObject = new GameObject("InfusionGlow_Light");
                     glowObject.transform.position = workstation.position + Vector3.up * 0.5f;
                     glowObject.transform.SetParent(workstation);
 
-                    // Add a purple point light
                     var light = glowObject.AddComponent<Light>();
                     light.color = new Color(1f, 0.5f, 0.1f); // Fire Orange
                     light.intensity = 4f;
                     light.range = 8f;
                     light.type = LightType.Point;
 
-                    // Add flicker behavior
                     glowObject.AddComponent<FlickerLight>();
 
                     activeGlowEffects[zdoid] = glowObject;
-                    // Debug.Log($"[BlacksmithingExpanded] Created infusion light for {workstation.name}");
                 }
                 else if (!enable && activeGlowEffects.TryGetValue(zdoid, out var existingEffect))
                 {
@@ -1042,7 +1473,6 @@ namespace BlacksmithingExpanded
                         UnityEngine.Object.Destroy(existingEffect);
 
                     activeGlowEffects.Remove(zdoid);
-                    // Debug.Log($"[BlacksmithingExpanded] Removed infusion light for {workstation.name}");
                 }
             }
             catch (Exception ex)
@@ -1050,6 +1480,7 @@ namespace BlacksmithingExpanded
                 Debug.LogError($"[BlacksmithingExpanded] Light management failed: {ex}");
             }
         }
+
         public class FlickerLight : MonoBehaviour
         {
             private Light lightSource;
@@ -1070,8 +1501,6 @@ namespace BlacksmithingExpanded
             }
         }
 
-
-        // Inventory repair patch
         [HarmonyPatch(typeof(InventoryGui), "OnRepairPressed")]
         public static class Patch_InventoryRepair
         {

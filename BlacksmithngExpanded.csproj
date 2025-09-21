@@ -115,10 +115,15 @@
     <Reference Include="UnityEngine.UIModule">
       <HintPath>$(GamePath)\valheim_Data\Managed\UnityEngine.UIModule.dll</HintPath>
     </Reference>
+    <Reference Include="YamlDotNet, Version=16.0.0.0, Culture=neutral, PublicKeyToken=ec19458f3c15af5e, processorArchitecture=MSIL">
+      <HintPath>packages\YamlDotNet.16.3.0\lib\net47\YamlDotNet.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <!-- Source files -->
   <ItemGroup>
-    <Compile Include="BlacksmithingExpanded.cs" />
+    <Compile Include="BlacksmithingExpanded.cs">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -134,13 +139,16 @@
     <Content Include="Libs\SkillManager.dll">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
+    <Content Include="Libs\YamlDotNet.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
     <EmbeddedResource Include="translations\English.yml" />
     <EmbeddedResource Include="icons\smithing.png" />
     <Content Include="ILRepack.targets" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
-    <None Include="ItemList.yml" />
+    <None Include="BlacksmithExpItemList.yml" />
     <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

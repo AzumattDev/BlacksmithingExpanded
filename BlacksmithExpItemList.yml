@@ -1,9 +1,35 @@
-# Comments are allowed
+#If whitelist is empty:
+#Items not on blacklist → Enhanced (normal mod behavior)
+#Items on blacklist → Not enhanced
+
+#If whitelist has items:
+#Items on whitelist → Enhanced
+#Items NOT on whitelist → Not enhanced (regardless of blacklist)
+
+#No whitelist items defined: The item gets enhanced (normal behavior)
+
 Whitelist:
-  - SwordIron
-  - ShieldBronze
-  # - CommentedItem
+
 
 Blacklist:
-  - WoodenClub
-  - StoneAxe
+  - Club
+  - AxeStone 
+  - Torch
+  - Tankard
+  - TankardAnniversary
+  - TrinketBronzeHealth
+  - TrinketBronzeStamina
+  - TrinketCarapaceEitr
+  - TrinketBlackDamageHealth
+  - TrinketFlametalEitr
+  - TrinketChitinSwim
+  - TrinketFlametalStaminaHealth
+  - TrinketIronHealth
+  - TrinketIronStamina
+  - TrinketScaleStaminaDamage
+  - TrinketSilverDamage
+  - TrinketSilverResist
+  - Demister
+  - DvergrKey
+  - SaddleAsksvin
+  - SaddleLox
