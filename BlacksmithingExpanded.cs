@@ -21,7 +21,7 @@ namespace BlacksmithingExpanded
     public class BlacksmithingExpanded : BaseUnityPlugin
     {
         internal const string ModName = "Blacksmithing Expanded";
-        internal const string ModVersion = "1.0.5";
+        internal const string ModVersion = "1.0.6";
         internal const string ModGUID = "org.bepinex.plugins.blacksmithingexpanded";
 
         private Harmony harmony;
@@ -57,6 +57,7 @@ namespace BlacksmithingExpanded
         private static readonly Dictionary<ZDOID, float> originalSmelterSpeeds = new();
         private static readonly Dictionary<ZDOID, float> originalKilnSpeeds = new();
         private static readonly Dictionary<ZDOID, GameObject> activeGlowEffects = new();
+        private static readonly Dictionary<string, BlacksmithingItemData> tempSpearDataStorage = new();
 
         // Config entries
         internal static ConfigEntry<float> cfg_SkillGainFactor;
@@ -253,8 +254,8 @@ namespace BlacksmithingExpanded
             cfg_ChanceExtraItemAt100 = AddConfig("General", "Extra item chance at 100", 0.05f, "At level 100: chance to get bonus item when crafting (0.05 = 5% chance for double output)");
             cfg_EnableInventoryRepair = AddConfig("General", "Enable inventory repair", true, "Allow repairing items directly from inventory (bypasses workbench requirement)");
             cfg_InventoryRepairUnlockLevel = AddConfig("General", "Inventory repair unlock level", 70, "Blacksmithing level required to repair items from inventory without workbench");
-            cfg_UsePercentageUpgradeBonus = AddConfig("General", "Use percentage upgrade bonus", true, "If enabled, upgrade bonuses are percentage-based instead of flat. When disabled, uses flat bonuses");
-            cfg_StatPercentageBonusPerUpgrade = AddConfig("General", "Stat percentage bonus per upgrade", 2f, "Percentage bonus per upgrade level when using percentage upgrade system (2 = 2% per upgrade level)");
+            cfg_UsePercentageUpgradeBonus = AddConfig("PercentageSystem", "Use percentage upgrade bonus", true, "If enabled, upgrade bonuses are percentage-based instead of flat. When disabled, uses flat bonuses");
+            cfg_StatPercentageBonusPerUpgrade = AddConfig("PercentageSystem", "Stat percentage bonus per upgrade", 2f, "Percentage bonus per upgrade level when using percentage upgrade system (2 = 2% per upgrade level)");
 
             // Item Filtering
             cfg_UseYamlFiltering = AddConfig("Item Filtering", "Use YAML item filtering", true, "Enable custom whitelist/blacklist system via BlacksmithExpItemList.yml file");
@@ -287,8 +288,8 @@ namespace BlacksmithingExpanded
             cfg_ArmorBonusPerTier = AddConfig("Stats", "Armor bonus per tier", 3f, "Flat armor points added per tier when crafting armor pieces");
             cfg_ArmorBonusPerUpgrade = AddConfig("Stats", "Armor bonus per upgrade", 1f, "Extra armor points per item quality level (star rating)");
             cfg_ArmorCap = AddConfig("Stats", "Armor cap", 300f, "Maximum armor value any piece can reach (0 = no limit)");
-            cfg_UsePercentageDamageBonus = AddConfig("Stats", "Use percentage damage bonus", true, "If enabled, damage bonuses are percentage-based instead of flat. Much more balanced for all weapon types");
-            cfg_DamagePercentageBonusPerTier = AddConfig("Stats", "Damage percentage bonus per tier", 3f, "Percentage damage bonus per tier when using percentage system (3 = 3% per tier)");
+            cfg_UsePercentageDamageBonus = AddConfig("PercentageSystem", "Use percentage damage bonus", true, "If enabled, damage bonuses are percentage-based instead of flat. Much more balanced for all weapon types");
+            cfg_DamagePercentageBonusPerTier = AddConfig("PercentageSystem", "Damage percentage bonus per tier", 3f, "Percentage damage bonus per tier when using percentage system (3 = 3% per tier)");
             cfg_DamageBonusPerTier = AddConfig("Stats", "Damage bonus per tier", 5, "Flat damage bonus added per stat tier. Applied to one random damage type (slash/pierce/blunt). Only used if percentage system is disabled");
             cfg_StatBonusPerUpgrade = AddConfig("Stats", "Stat bonus per upgrade", 4f, "Extra damage/armor bonus per item quality level (star rating). Only used if percentage upgrade system is disabled");
 
@@ -300,8 +301,8 @@ namespace BlacksmithingExpanded
             cfg_LightningBonusPerTier = AddConfig("Elemental", "Lightning bonus per tier", 5f, "Lightning damage points per tier (good vs wet enemies)");
             cfg_PoisonBonusPerTier = AddConfig("Elemental", "Poison bonus per tier", 2.5f, "Poison damage points per tier (causes poison damage over time)");
             cfg_SpiritBonusPerTier = AddConfig("Elemental", "Spirit bonus per tier", 4f, "Spirit damage points per tier (extra effective vs undead enemies)");
-            cfg_UsePercentageElementalBonus = AddConfig("Elemental", "Use percentage elemental bonus", true, "If enabled, elemental bonuses are percentage-based instead of flat. Much more balanced for all weapon types");
-            cfg_ElementalPercentageBonusPerTier = AddConfig("Elemental", "Elemental percentage bonus per tier", 2f, "Percentage elemental bonus per tier when using percentage system (2 = 2% per tier)");
+            cfg_UsePercentageElementalBonus = AddConfig("PercentageSystem", "Use percentage elemental bonus", true, "If enabled, elemental bonuses are percentage-based instead of flat. Much more balanced for all weapon types");
+            cfg_ElementalPercentageBonusPerTier = AddConfig("PercentageSystem", "Elemental percentage bonus per tier", 2f, "Percentage elemental bonus per tier when using percentage system (2 = 2% per tier)");
 
             // Shield Stats
             cfg_TimedBlockBonusPerTier = AddConfig("Shields", "Timed block bonus per tier", 0.05f, "Parry/perfect block bonus per tier (0.05 = 5% better parry window/damage)");
@@ -1547,6 +1548,231 @@ Blacklist:
         // UTILITY METHODS
         // ================================
 
+        [HarmonyPatch(typeof(Attack), "Start")]
+        public static class Patch_AttackStart
+        {
+            static void Prefix(Attack __instance, ItemDrop.ItemData weapon, Humanoid character)
+            {
+                if (weapon?.IsWeapon() != true || !(character is Player player)) return;
+                if (!weapon.m_shared.m_name.ToLower().Contains("spear")) return; // Only spears
+
+                // Check if this is a secondary attack (spear throw)
+                if (__instance.m_attackType == Attack.AttackType.Projectile)
+                {
+                    var data = weapon.Data().Get<BlacksmithingItemData>();
+                    if (data?.level > 0)
+                    {
+                        // Create a unique key for this spear throw
+                        string key = GenerateSpearKey(weapon, player);
+
+                        // Store the blacksmithing data
+                        var storedData = new BlacksmithingItemData();
+                        CopyBlacksmithingData(data, storedData);
+                        tempSpearDataStorage[key] = storedData;
+
+          //              Debug.Log($"[BlacksmithingExpanded] Stored spear data for throw: {weapon.m_shared.m_name} (level {data.level}) Key: {key}");
+
+                        // Clean up old entries
+                        CleanupOldSpearData();
+                    }
+                }
+            }
+        }
+
+        // Patch 2: Apply data to newly created ItemDrop instances (when spears land and become pickupable)
+        [HarmonyPatch(typeof(ItemDrop), "Start")]
+        public static class Patch_ItemDropStart
+        {
+            static void Postfix(ItemDrop __instance)
+            {
+                if (__instance?.m_itemData?.IsWeapon() != true) return;
+                if (!__instance.m_itemData.m_shared.m_name.ToLower().Contains("spear")) return;
+
+                var item = __instance.m_itemData;
+                var existingData = item.Data().Get<BlacksmithingItemData>();
+
+                // Only restore if the item doesn't already have blacksmithing data
+                if (existingData?.level > 0) return;
+
+                // Look for matching stored spear data
+                var bestMatch = FindBestSpearMatch(item);
+                if (bestMatch.Key != null && bestMatch.Value != null)
+                {
+                    var newData = item.Data().GetOrCreate<BlacksmithingItemData>();
+                    CopyBlacksmithingData(bestMatch.Value, newData);
+
+                    newData.Save();
+                    // DON'T call Load() here - it triggers ApplyCraftingBonuses which can change infusions
+                    // Instead, manually apply the stats to preserve the exact infusion type
+                    ApplyStoredBlacksmithingStats(item, newData);
+
+                    // Remove the used data
+                    tempSpearDataStorage.Remove(bestMatch.Key);
+
+          //          Debug.Log($"[BlacksmithingExpanded] Restored blacksmithing data to landed spear: {item.m_shared.m_name} (level {newData.level}, infusion: {newData.infusion})");
+                }
+            }
+        }
+
+        // Patch 3: Handle item cloning to preserve data (for completeness)
+        [HarmonyPatch(typeof(ItemDrop.ItemData), nameof(ItemDrop.ItemData.Clone))]
+        public static class Patch_ItemDataClone
+        {
+            static void Postfix(ItemDrop.ItemData __result, ItemDrop.ItemData __instance)
+            {
+                if (__instance == null || __result == null) return;
+
+                var originalData = __instance.Data().Get<BlacksmithingItemData>();
+                if (originalData?.level > 0)
+                {
+                    var clonedData = __result.Data().GetOrCreate<BlacksmithingItemData>();
+                    CopyBlacksmithingData(originalData, clonedData);
+
+                    clonedData.Save();
+                    clonedData.Load();
+
+              //      Debug.Log($"[BlacksmithingExpanded] Copied blacksmithing data to cloned item: {__result.m_shared.m_name}");
+                }
+            }
+        }
+
+        // Helper method to generate unique spear key
+        private static string GenerateSpearKey(ItemDrop.ItemData weapon, Player player)
+        {
+            return $"{weapon.m_shared.m_name}_{weapon.m_quality}_{weapon.m_durability:F1}_{player.GetPlayerID()}_{Time.time:F2}";
+        }
+
+        // Helper method to find best matching spear data
+        private static KeyValuePair<string, BlacksmithingItemData> FindBestSpearMatch(ItemDrop.ItemData item)
+        {
+            string bestKey = null;
+            BlacksmithingItemData bestData = null;
+            float bestScore = 0f;
+
+            var currentTime = Time.time;
+
+            foreach (var kvp in tempSpearDataStorage.ToList())
+            {
+                var keyParts = kvp.Key.Split('_');
+                if (keyParts.Length < 5) continue;
+
+                string storedName = keyParts[0];
+                if (!int.TryParse(keyParts[1], out int storedQuality)) continue;
+                if (!float.TryParse(keyParts[2], out float storedDurability)) continue;
+                if (!long.TryParse(keyParts[3], out long storedPlayerId)) continue;
+                if (!float.TryParse(keyParts[4], out float timestamp)) continue;
+
+                // Check basic match criteria
+                if (storedName != item.m_shared.m_name || storedQuality != item.m_quality) continue;
+
+                // Calculate match score (prefer recent throws with similar durability)
+                float timeDiff = currentTime - timestamp;
+                if (timeDiff > 60f) continue; // Ignore throws older than 60 seconds
+
+                float durabilityDiff = Mathf.Abs(item.m_durability - storedDurability);
+                float score = 1000f - (durabilityDiff * 10f) - (timeDiff * 5f);
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestKey = kvp.Key;
+                    bestData = kvp.Value;
+                }
+            }
+
+            return new KeyValuePair<string, BlacksmithingItemData>(bestKey, bestData);
+        }
+
+        // Helper method to clean up old stored spear data
+        private static void CleanupOldSpearData()
+        {
+            var currentTime = Time.time;
+            var keysToRemove = new List<string>();
+
+            foreach (var kvp in tempSpearDataStorage)
+            {
+                var keyParts = kvp.Key.Split('_');
+                if (keyParts.Length >= 5 && float.TryParse(keyParts[4], out float timestamp))
+                {
+                    if (currentTime - timestamp > 120f) // Remove data older than 2 minutes
+                    {
+                        keysToRemove.Add(kvp.Key);
+                    }
+                }
+                else
+                {
+                    keysToRemove.Add(kvp.Key); // Remove malformed keys
+                }
+            }
+
+            foreach (var key in keysToRemove)
+            {
+                tempSpearDataStorage.Remove(key);
+            }
+
+            if (keysToRemove.Count > 0)
+            {
+            //    Debug.Log($"[BlacksmithingExpanded] Cleaned up {keysToRemove.Count} old spear data entries");
+            }
+        }
+
+        // Helper method to manually apply stored blacksmithing stats without triggering random infusions
+        private static void ApplyStoredBlacksmithingStats(ItemDrop.ItemData item, BlacksmithingItemData data)
+        {
+            var baseStats = GetBaseStats(item);
+
+            // Apply durability
+            if (data.maxDurability > 0f)
+            {
+                item.m_shared.m_maxDurability = data.maxDurability;
+                item.m_durability = Mathf.Min(item.m_durability, data.maxDurability);
+            }
+
+            // Apply armor
+            if (data.armorBonus > 0f)
+            {
+                item.m_shared.m_armor = baseStats.armor + data.armorBonus;
+            }
+
+            // Apply damage bonuses - preserve exact values from stored data
+            item.m_shared.m_damages.m_blunt = baseStats.damages.m_blunt + data.damageBlunt;
+            item.m_shared.m_damages.m_slash = baseStats.damages.m_slash + data.damageSlash;
+            item.m_shared.m_damages.m_pierce = baseStats.damages.m_pierce + data.damagePierce;
+            item.m_shared.m_damages.m_fire = baseStats.damages.m_fire + data.damageFire;
+            item.m_shared.m_damages.m_frost = baseStats.damages.m_frost + data.damageFrost;
+            item.m_shared.m_damages.m_lightning = baseStats.damages.m_lightning + data.damageLightning;
+            item.m_shared.m_damages.m_poison = baseStats.damages.m_poison + data.damagePoison;
+            item.m_shared.m_damages.m_spirit = baseStats.damages.m_spirit + data.damageSpirit;
+
+            // Apply shield bonuses
+            if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shield)
+            {
+                if (data.blockPowerBonus > 0f) item.m_shared.m_blockPower += data.blockPowerBonus;
+                if (data.timedBlockBonus > 0f) item.m_shared.m_timedBlockBonus += data.timedBlockBonus;
+            }
+
+           // Debug.Log($"[BlacksmithingExpanded] Manually applied stored stats to {item.m_shared.m_name} - preserving {data.infusion} infusion");
+        }
+
+        // Helper method to copy blacksmithing data between instances
+        private static void CopyBlacksmithingData(BlacksmithingItemData source, BlacksmithingItemData target)
+        {
+            target.level = source.level;
+            target.infusion = source.infusion;
+            target.baseDurability = source.baseDurability;
+            target.maxDurability = source.maxDurability;
+            target.armorBonus = source.armorBonus;
+            target.damageBlunt = source.damageBlunt;
+            target.damageSlash = source.damageSlash;
+            target.damagePierce = source.damagePierce;
+            target.damageFire = source.damageFire;
+            target.damageFrost = source.damageFrost;
+            target.damageLightning = source.damageLightning;
+            target.damagePoison = source.damagePoison;
+            target.damageSpirit = source.damageSpirit;
+            target.blockPowerBonus = source.blockPowerBonus;
+            target.timedBlockBonus = source.timedBlockBonus;
+        }
         private static Sprite LoadEmbeddedSprite(string resourceName, int width, int height)
         {
             try
