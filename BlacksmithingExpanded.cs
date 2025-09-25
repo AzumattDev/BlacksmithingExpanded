@@ -21,7 +21,7 @@ namespace BlacksmithingExpanded
     public class BlacksmithingExpanded : BaseUnityPlugin
     {
         internal const string ModName = "Blacksmithing Expanded";
-        internal const string ModVersion = "1.0.6";
+        internal const string ModVersion = "1.0.7";
         internal const string ModGUID = "org.bepinex.plugins.blacksmithingexpanded";
 
         private Harmony harmony;
@@ -85,7 +85,6 @@ namespace BlacksmithingExpanded
         internal static ConfigEntry<float> cfg_DurabilityBonusPerUpgrade;
         internal static ConfigEntry<bool> cfg_RespectOriginalDurability;
         internal static ConfigEntry<float> cfg_MaxDurabilityCap;
-        // NEW: Non-repairable items config
         internal static ConfigEntry<bool> cfg_AllowNonRepairableItems;
 
         // Armor & Weapons
@@ -95,10 +94,8 @@ namespace BlacksmithingExpanded
         internal static ConfigEntry<float> cfg_ArmorCap;
         internal static ConfigEntry<int> cfg_DamageBonusPerTier;
         internal static ConfigEntry<float> cfg_StatBonusPerUpgrade;
-        // NEW: Percentage-based damage system
         internal static ConfigEntry<bool> cfg_UsePercentageDamageBonus;
         internal static ConfigEntry<float> cfg_DamagePercentageBonusPerTier;
-        // NEW: Percentage-based upgrade bonuses - DEFAULTED TO FALSE FOR SAFETY
         internal static ConfigEntry<bool> cfg_UsePercentageUpgradeBonus;
         internal static ConfigEntry<float> cfg_StatPercentageBonusPerUpgrade;
 
@@ -129,7 +126,6 @@ namespace BlacksmithingExpanded
 
         private static Sprite s_skillIcon;
 
-        // Data structures
         private struct ItemBaseStats
         {
             public float armor;
@@ -169,7 +165,6 @@ namespace BlacksmithingExpanded
             harmony = new Harmony(ModGUID);
             configPath = Path.Combine(Path.GetDirectoryName(Config.ConfigFilePath), "BlacksmithExpItemList.yml");
 
-            // Load skill icon
             try
             {
                 s_skillIcon = LoadEmbeddedSprite("smithing.png", 64, 64);
@@ -188,13 +183,10 @@ namespace BlacksmithingExpanded
                 Debug.LogError($"[BlacksmithingExpanded] Skill setup failed: {ex}");
             }
 
-            // Setup configs
             SetupConfigs();
 
-            // Initialize YAML filtering system
             InitializeYamlFiltering();
 
-            // Setup sync listeners for YAML data
             syncedWhitelistItems.ValueChanged += () =>
             {
                 whitelistedItems.Clear();
@@ -215,7 +207,6 @@ namespace BlacksmithingExpanded
                 Logger.LogDebug($"[BlacksmithingExpanded] Received synced blacklist: {blacklistedItems.Count} items");
             };
 
-            // Sync skill configs
             if (blacksmithSkill != null)
             {
                 blacksmithSkill.SkillGainFactor = cfg_SkillGainFactor.Value;
@@ -224,7 +215,6 @@ namespace BlacksmithingExpanded
                 cfg_SkillEffectFactor.SettingChanged += (_, _) => blacksmithSkill.SkillEffectFactor = cfg_SkillEffectFactor.Value;
             }
 
-            // Setup YAML config change handler (server only)
             cfg_UseYamlFiltering.SettingChanged += (_, _) =>
             {
                 if (ZNet.instance == null || ZNet.instance.IsServer())
@@ -233,16 +223,14 @@ namespace BlacksmithingExpanded
                 }
             };
 
-            // Register ItemDataManager type for force loading
             ItemInfo.ForceLoadTypes.Add(typeof(BlacksmithingItemData));
 
             harmony.PatchAll();
-            //Logger.LogInfo($"{ModName} v{ModVersion} loaded.");
         }
 
         private void SetupConfigs()
         {
-            // General
+            // General Configs
             cfg_SkillGainFactor = AddConfig("General", "Skill gain factor", 1f, "Multiplier for blacksmithing XP gain rate (1.5 = 50% faster leveling)");
             cfg_SkillEffectFactor = AddConfig("General", "Skill effect factor", 1f, "Global multiplier for all blacksmithing bonuses (damage, armor, durability, etc). Higher = stronger effects");
             cfg_InfusionTierInterval = AddConfig("General", "Workstation infusion milestone interval", 10, "Every X blacksmithing levels unlocks a new tier of smelter/kiln speed bonus");
@@ -627,13 +615,24 @@ Blacklist:
         internal static int GetPlayerBlacksmithingLevel(Player player)
         {
             if (player?.GetComponent<Skills>() == null) return 0;
+
             try
             {
                 var skillType = Skill.fromName("Blacksmithing");
-                return Mathf.FloorToInt(player.GetComponent<Skills>().GetSkillLevel(skillType));
+                if (skillType == null)
+                {
+                    Debug.LogWarning("[BlacksmithingExpanded] Blacksmithing skill not found, returning 0");
+                    return 0;
+                }
+
+                float level = player.GetComponent<Skills>().GetSkillLevel(skillType);
+                Debug.Log($"[BlacksmithingExpanded] Player {player.GetPlayerName()} blacksmithing level: {level}");
+
+                return Mathf.FloorToInt(level);
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.LogError($"[BlacksmithingExpanded] Error getting blacksmithing level: {ex}");
                 return 0;
             }
         }
@@ -714,16 +713,11 @@ Blacklist:
 
             if (existingData != null && existingData.level > 0)
             {
-                // Item already has blacksmithing bonuses applied
-                // For upgrades, we need to recalculate bonuses based on new quality level
-                // but we should clear existing bonuses first to prevent stacking
 
                 Debug.Log($"[BlacksmithingExpanded] Item '{item.m_shared.m_name}' already has blacksmithing data (level {existingData.level}). Recalculating for quality {item.m_quality}...");
 
-                // PRESERVE the original infusion type
                 preservedInfusion = existingData.infusion;
 
-                // Clear existing bonuses from the data object before recalculating
                 existingData.armorBonus = 0f;
                 existingData.damageBlunt = 0f;
                 existingData.damageSlash = 0f;
@@ -735,7 +729,6 @@ Blacklist:
                 existingData.damageSpirit = 0f;
                 existingData.blockPowerBonus = 0f;
                 existingData.timedBlockBonus = 0f;
-                // Don't clear infusion here - we'll restore it below
             }
 
             int statTier = level / cfg_StatTierInterval.Value;
@@ -837,10 +830,9 @@ Blacklist:
             data.Save();
             data.Load();
 
-            Debug.Log($"[BlacksmithingExpanded] Applied bonuses to {item.m_shared.m_name}: level={level}, tier={statTier}, quality={item.m_quality}");
         }
 
-        // SIMPLIFIED: Apply damage bonuses with cleaner logic
+        // Apply damage bonuses with cleaner logic
         private static void ApplyDamageBonuses(ItemDrop.ItemData item, ItemBaseStats baseStats, int statTier, BlacksmithingItemData data)
         {
             // Calculate tier bonus
@@ -885,7 +877,7 @@ Blacklist:
             ApplyRandomDamageBonus(item, baseStats, tierBonus, upgradeBonus, data);
         }
 
-        // SIMPLIFIED: Calculate effective tier for elemental bonuses
+        // Calculate effective tier for elemental bonuses
         private static float CalculateElementalEffectiveTier(int statTier, int quality)
         {
             float tierComponent = statTier;
@@ -965,13 +957,13 @@ Blacklist:
             data.infusion = infusionType;
         }
 
-        // FIXED: Helper method to calculate total physical damage for multi-damage-type weapons
+        // Helper method to calculate total physical damage for multi-damage-type weapons
         private static float GetTotalPhysicalDamage(ItemBaseStats baseStats)
         {
             return baseStats.damages.m_blunt + baseStats.damages.m_slash + baseStats.damages.m_pierce;
         }
 
-        // UPDATED: Apply random damage bonus with separate tier and upgrade bonuses
+        // Apply random damage bonus with separate tier and upgrade bonuses
         private static void ApplyRandomDamageBonus(ItemDrop.ItemData item, ItemBaseStats baseStats, float tierBonus, float upgradeBonus, BlacksmithingItemData data)
         {
             var validTypes = new List<System.Action>();
@@ -1038,11 +1030,10 @@ Blacklist:
 
             if (cfg_UsePercentageElementalBonus.Value)
             {
-                // Percentage-based elemental system
+
                 float percentageBonus = effectiveTiers * cfg_ElementalPercentageBonusPerTier.Value / 100f;
                 float totalBaseDamage = GetTotalPhysicalDamage(baseStats); // Use total damage
 
-                // Only add elements that don't already exist in base stats
                 if (baseStats.damages.m_fire <= 0f)
                 {
                     elements.Add(("Fire", () => {
@@ -1090,7 +1081,7 @@ Blacklist:
             }
             else
             {
-                // Original flat bonus system
+
                 if (baseStats.damages.m_fire <= 0f)
                 {
                     elements.Add(("Fire", () => {
@@ -1162,14 +1153,16 @@ Blacklist:
                 var craftedItem = player.GetInventory().GetAllItems().LastOrDefault();
                 if (craftedItem?.m_shared == null) return;
 
+                EnsureSkillInitialized(player);
+
                 int level = GetPlayerBlacksmithingLevel(player);
-                if (level <= 0) return;
 
-                // Apply bonuses immediately
-                ApplyCraftingBonuses(craftedItem, level);
+                // Apply bonuses even if level is 0 (new players should still get basic functionality)
+                ApplyCraftingBonuses(craftedItem, Math.Max(level, 1)); // Minimum level 1 for new players
 
-                // Handle XP
-                HandleCraftingXP(player, craftedItem);
+                float xpEarned = HandleCraftingXP(player, craftedItem);
+
+                Debug.Log($"[BlacksmithingExpanded] Crafted {craftedItem.m_shared.m_name}: level={level}, quality={craftedItem.m_quality}, xp={xpEarned:F2}");
 
                 // Extra item chance
                 float extraChance = cfg_ChanceExtraItemAt100.Value * (level / 100f);
@@ -1177,22 +1170,66 @@ Blacklist:
                 {
                     player.GetInventory().AddItem(craftedItem.m_shared.m_name, 1, 1, 0, player.GetPlayerID(), player.GetPlayerName());
                     player.Message(MessageHud.MessageType.TopLeft, "Masterwork crafting created an extra item!");
+                    Debug.Log($"[BlacksmithingExpanded] Extra item created: {craftedItem.m_shared.m_name}");
                 }
             }
         }
 
-        private static void HandleCraftingXP(Player player, ItemDrop.ItemData item)
+        // Ensure skill is properly initialized
+        private static void EnsureSkillInitialized(Player player)
         {
-            // First craft bonus
-            string craftKey = "crafted_" + item.m_shared.m_name;
+            try
+            {
+                // Check if player already has the skill
+                var skills = player.GetComponent<Skills>();
+                if (skills == null) return;
+
+                var skillType = Skill.fromName("Blacksmithing");
+                if (skillType == null)
+                {
+                    Debug.LogError("[BlacksmithingExpanded] Blacksmithing skill type not found!");
+                    return;
+                }
+
+                // Check current skill level
+                float currentLevel = skills.GetSkillLevel(skillType);
+
+                // If skill level is 0 or very low, give a small amount to initialize it
+                if (currentLevel < 0.1f)
+                {
+                    Debug.Log("[BlacksmithingExpanded] Initializing Blacksmithing skill for new player");
+
+                    // Use SkillManager to properly initialize the skill
+                    SkillManager.SkillExtensions.RaiseSkill(player, "Blacksmithing", 0.1f);
+
+                    Debug.Log($"[BlacksmithingExpanded] Skill initialized. New level: {skills.GetSkillLevel(skillType)}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[BlacksmithingExpanded] Failed to initialize skill: {ex}");
+            }
+        }
+
+        private static float HandleCraftingXP(Player player, ItemDrop.ItemData item)
+        {
+            float totalXP = 0f;
+            string itemHash = item.m_shared.m_name.GetStableHashCode().ToString();
+            string craftKey = $"crafted_{itemHash}";
+
             if (!player.m_customData.ContainsKey(craftKey))
             {
                 player.m_customData[craftKey] = "1";
-                GiveBlacksmithingXP(player, cfg_FirstCraftBonusXP.Value);
+                float firstXP = cfg_FirstCraftBonusXP.Value;
+                GiveBlacksmithingXP(player, firstXP);
+                totalXP += firstXP;
             }
 
-            // Regular XP
-            GiveBlacksmithingXP(player, cfg_XPPerCraft.Value);
+            float regularXP = cfg_XPPerCraft.Value;
+            GiveBlacksmithingXP(player, regularXP);
+            totalXP += regularXP;
+
+            return totalXP;
         }
 
         [HarmonyPatch(typeof(ItemDrop.ItemData), nameof(ItemDrop.ItemData.GetTooltip), typeof(ItemDrop.ItemData), typeof(int), typeof(bool), typeof(float), typeof(int))]
@@ -1536,11 +1573,11 @@ Blacklist:
                         player.Message(MessageHud.MessageType.TopLeft,
                             $"Repaired with masterwork precision! (+{repairAmount:F0} durability)", 0, null);
 
-                        return false; // Prevent default repair, we handled it
+                        return false; 
                     }
                 }
 
-                return true; // No items to repair, allow default behavior
+                return true; 
             }
         }
 
@@ -1556,30 +1593,26 @@ Blacklist:
                 if (weapon?.IsWeapon() != true || !(character is Player player)) return;
                 if (!weapon.m_shared.m_name.ToLower().Contains("spear")) return; // Only spears
 
-                // Check if this is a secondary attack (spear throw)
+                
                 if (__instance.m_attackType == Attack.AttackType.Projectile)
                 {
                     var data = weapon.Data().Get<BlacksmithingItemData>();
                     if (data?.level > 0)
                     {
-                        // Create a unique key for this spear throw
+                        
                         string key = GenerateSpearKey(weapon, player);
-
-                        // Store the blacksmithing data
+                        
                         var storedData = new BlacksmithingItemData();
                         CopyBlacksmithingData(data, storedData);
                         tempSpearDataStorage[key] = storedData;
 
-          //              Debug.Log($"[BlacksmithingExpanded] Stored spear data for throw: {weapon.m_shared.m_name} (level {data.level}) Key: {key}");
-
-                        // Clean up old entries
                         CleanupOldSpearData();
                     }
                 }
             }
         }
 
-        // Patch 2: Apply data to newly created ItemDrop instances (when spears land and become pickupable)
+        // Apply data to newly created ItemDrop instances (when spears land and become pickupable)
         [HarmonyPatch(typeof(ItemDrop), "Start")]
         public static class Patch_ItemDropStart
         {
@@ -1591,10 +1624,8 @@ Blacklist:
                 var item = __instance.m_itemData;
                 var existingData = item.Data().Get<BlacksmithingItemData>();
 
-                // Only restore if the item doesn't already have blacksmithing data
                 if (existingData?.level > 0) return;
 
-                // Look for matching stored spear data
                 var bestMatch = FindBestSpearMatch(item);
                 if (bestMatch.Key != null && bestMatch.Value != null)
                 {
@@ -1602,19 +1633,16 @@ Blacklist:
                     CopyBlacksmithingData(bestMatch.Value, newData);
 
                     newData.Save();
-                    // DON'T call Load() here - it triggers ApplyCraftingBonuses which can change infusions
-                    // Instead, manually apply the stats to preserve the exact infusion type
+
                     ApplyStoredBlacksmithingStats(item, newData);
 
-                    // Remove the used data
                     tempSpearDataStorage.Remove(bestMatch.Key);
 
-          //          Debug.Log($"[BlacksmithingExpanded] Restored blacksmithing data to landed spear: {item.m_shared.m_name} (level {newData.level}, infusion: {newData.infusion})");
                 }
             }
         }
 
-        // Patch 3: Handle item cloning to preserve data (for completeness)
+        // Handle item cloning to preserve data (for completeness)
         [HarmonyPatch(typeof(ItemDrop.ItemData), nameof(ItemDrop.ItemData.Clone))]
         public static class Patch_ItemDataClone
         {
@@ -1631,7 +1659,6 @@ Blacklist:
                     clonedData.Save();
                     clonedData.Load();
 
-              //      Debug.Log($"[BlacksmithingExpanded] Copied blacksmithing data to cloned item: {__result.m_shared.m_name}");
                 }
             }
         }
@@ -1662,12 +1689,10 @@ Blacklist:
                 if (!long.TryParse(keyParts[3], out long storedPlayerId)) continue;
                 if (!float.TryParse(keyParts[4], out float timestamp)) continue;
 
-                // Check basic match criteria
                 if (storedName != item.m_shared.m_name || storedQuality != item.m_quality) continue;
 
-                // Calculate match score (prefer recent throws with similar durability)
                 float timeDiff = currentTime - timestamp;
-                if (timeDiff > 60f) continue; // Ignore throws older than 60 seconds
+                if (timeDiff > 60f) continue; 
 
                 float durabilityDiff = Mathf.Abs(item.m_durability - storedDurability);
                 float score = 1000f - (durabilityDiff * 10f) - (timeDiff * 5f);
@@ -1694,14 +1719,14 @@ Blacklist:
                 var keyParts = kvp.Key.Split('_');
                 if (keyParts.Length >= 5 && float.TryParse(keyParts[4], out float timestamp))
                 {
-                    if (currentTime - timestamp > 120f) // Remove data older than 2 minutes
+                    if (currentTime - timestamp > 120f) 
                     {
                         keysToRemove.Add(kvp.Key);
                     }
                 }
                 else
                 {
-                    keysToRemove.Add(kvp.Key); // Remove malformed keys
+                    keysToRemove.Add(kvp.Key); 
                 }
             }
 
@@ -1712,7 +1737,7 @@ Blacklist:
 
             if (keysToRemove.Count > 0)
             {
-            //    Debug.Log($"[BlacksmithingExpanded] Cleaned up {keysToRemove.Count} old spear data entries");
+                Debug.Log($"[BlacksmithingExpanded] Cleaned up {keysToRemove.Count} old data entries");
             }
         }
 
@@ -1721,14 +1746,12 @@ Blacklist:
         {
             var baseStats = GetBaseStats(item);
 
-            // Apply durability
             if (data.maxDurability > 0f)
             {
                 item.m_shared.m_maxDurability = data.maxDurability;
                 item.m_durability = Mathf.Min(item.m_durability, data.maxDurability);
             }
 
-            // Apply armor
             if (data.armorBonus > 0f)
             {
                 item.m_shared.m_armor = baseStats.armor + data.armorBonus;
@@ -1750,8 +1773,6 @@ Blacklist:
                 if (data.blockPowerBonus > 0f) item.m_shared.m_blockPower += data.blockPowerBonus;
                 if (data.timedBlockBonus > 0f) item.m_shared.m_timedBlockBonus += data.timedBlockBonus;
             }
-
-           // Debug.Log($"[BlacksmithingExpanded] Manually applied stored stats to {item.m_shared.m_name} - preserving {data.infusion} infusion");
         }
 
         // Helper method to copy blacksmithing data between instances
