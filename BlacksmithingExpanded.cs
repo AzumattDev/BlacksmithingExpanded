@@ -461,6 +461,7 @@ namespace BlacksmithingExpanded
             public static readonly Dictionary<ItemDrop.ItemData.SharedData, BlacksmithingItemData> activeItems = new();
 
             [SerializeField] public int level = 0;
+            [SerializeField] public int lastKnownQuality = 0;
             [SerializeField] public string infusion = "";
             [SerializeField] public float baseDurability = 0f;
             [SerializeField] public float maxDurability = 0f;
@@ -484,8 +485,8 @@ namespace BlacksmithingExpanded
                 base.Load();
                 activeItems[Item.m_shared] = this;
 
-                // IMPROVED: Only apply stats if they haven't been applied yet and level > 0
-                if (!IsCloned && level > 0 && !statsApplied)
+                // FIXED: Always apply stats on load if we have level > 0
+                if (!IsCloned && level > 0)
                 {
                     ApplyStoredStats();
                     statsApplied = true;
@@ -497,6 +498,12 @@ namespace BlacksmithingExpanded
             {
                 var baseStats = GetBaseStats(Item);
                 if (!baseStats.isCached) return;
+
+                // Create a copy of shared data to avoid affecting other items
+                var originalShared = Item.m_shared;
+                Item.m_shared = (ItemDrop.ItemData.SharedData)originalShared.GetType()
+                    .GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .Invoke(originalShared, null);
 
                 // Apply durability
                 if (maxDurability > 0f)
@@ -531,37 +538,17 @@ namespace BlacksmithingExpanded
 
             public override void Unload()
             {
-                if (level > 0 && statsApplied)
-                {
-                    var baseStats = GetBaseStats(Item);
-                    if (baseStats.isCached)
-                    {
-                        // Reset stats to base values
-                        ResetToBaseStats(baseStats);
-                    }
-                    statsApplied = false;
-                }
+                // Only remove from active items, don't reset stats on unload
+                // The stats should persist in the saved data
                 activeItems.Remove(Item.m_shared);
             }
 
             // IMPROVED: Cleaner method for resetting stats
             private void ResetToBaseStats(ItemBaseStats baseStats)
             {
-                // Make a copy of the shared data to avoid affecting other items
-                Item.m_shared = (ItemDrop.ItemData.SharedData)
-                    AccessTools.DeclaredMethod(typeof(object), "MemberwiseClone")
-                    .Invoke(Item.m_shared, Array.Empty<object>());
-
-                // Reset to base stats
-                Item.m_shared.m_maxDurability = baseStats.durability;
-                Item.m_shared.m_armor = baseStats.armor;
-                Item.m_shared.m_damages = baseStats.damages.Clone();
-
-                if (Item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shield)
-                {
-                    Item.m_shared.m_blockPower -= blockPowerBonus;
-                    Item.m_shared.m_timedBlockBonus -= timedBlockBonus;
-                }
+                // Don't modify the shared data as this affects all items of this type
+                // Instead, let the Load() method handle applying the correct stats
+                return;
             }
 
             protected override bool AllowStackingIdenticalValues { get; set; } = true;
@@ -936,11 +923,33 @@ Blacklist:
             var data = item.Data().GetOrCreate<BlacksmithingItemData>();
             string preservedInfusion = data.infusion ?? "";
 
-            // SIMPLIFIED: Always recalculate if level is different or this is first application
+            // FIXED: Handle migration for existing items - don't reprocess if only lastKnownQuality is uninitialized
+            bool shouldRecalculate = false;
+
             if (data.level != level || data.level == 0)
+            {
+                // Level changed or item is new
+                shouldRecalculate = true;
+            }
+            else if (data.lastKnownQuality > 0 && data.lastKnownQuality != item.m_quality)
+            {
+                // Quality changed (but only if lastKnownQuality was previously set)
+                shouldRecalculate = true;
+            }
+            else if (data.lastKnownQuality == 0 && data.level > 0)
+            {
+                // Migration case: existing item with no lastKnownQuality set
+                // Just set the quality without recalculating
+                data.lastKnownQuality = item.m_quality;
+                data.Save();
+                return;
+            }
+
+            if (shouldRecalculate)
             {
                 // Reset all bonuses for clean recalculation
                 data.level = level;
+                data.lastKnownQuality = item.m_quality; // Store current quality
                 data.baseDurability = baseStats.durability;
                 data.armorBonus = 0f;
                 data.damageBlunt = 0f;
@@ -977,10 +986,10 @@ Blacklist:
                     }
                 }
 
-                // Apply damage bonuses
+                // Apply damage bonuses - FIXED to properly handle upgrades
                 ApplyDamageBonuses(item, baseStats, statTier, data);
 
-                // Apply armor bonus
+                // Apply armor bonus - FIXED to properly recalculate
                 if (baseStats.armor > 0f)
                 {
                     float armorTierBonus = statTier * cfg_ArmorBonusPerTier.Value;
@@ -999,6 +1008,12 @@ Blacklist:
                     data.armorBonus = armorTierBonus + armorUpgradeBonus;
                     if (cfg_ArmorCap.Value > 0f && baseStats.armor + data.armorBonus > cfg_ArmorCap.Value)
                         data.armorBonus = cfg_ArmorCap.Value - baseStats.armor;
+
+                    // DEBUG: Log the armor calculation
+                    Debug.Log($"[BlacksmithingExpanded] Armor calculation for {item.m_shared.m_name}: " +
+                             $"Base={baseStats.armor}, Quality={item.m_quality}, " +
+                             $"TierBonus={armorTierBonus}, UpgradeBonus={armorUpgradeBonus}, " +
+                             $"TotalBonus={data.armorBonus}");
                 }
 
                 // Apply shield bonuses
@@ -1040,7 +1055,7 @@ Blacklist:
                 data.Save();
                 data.Load();
 
-                Debug.Log($"[BlacksmithingExpanded] Applied bonuses to {item.m_shared.m_name} (level {level})");
+                Debug.Log($"[BlacksmithingExpanded] Applied bonuses to {item.m_shared.m_name} (level {level}, quality {item.m_quality})");
             }
         }
 
@@ -1085,7 +1100,7 @@ Blacklist:
                 }
             }
 
-            // Apply total bonus
+            // Apply total bonus - FIXED to properly combine tier and upgrade bonuses
             ApplyRandomDamageBonus(item, baseStats, tierBonus, upgradeBonus, data);
         }
 
@@ -1550,6 +1565,29 @@ Blacklist:
             return totalXP;
         }
 
+        [HarmonyPatch(typeof(InventoryGui), "DoCrafting")]
+        public static class Patch_UpgradeDetection_Alternative
+        {
+            static void Postfix(InventoryGui __instance)
+            {
+                var player = Player.m_localPlayer;
+                if (player?.GetInventory() == null) return;
+
+                foreach (var item in player.GetInventory().GetAllItems())
+                {
+                    if (!ItemEligibilityCache.IsEligibleForBlacksmithingBonuses(item)) continue;
+
+                    var data = item.Data().Get<BlacksmithingItemData>();
+                    if (data != null && data.lastKnownQuality < item.m_quality)
+                    {
+                        int level = GetPlayerBlacksmithingLevel(player);
+                        GiveBlacksmithingXP(player, cfg_XPPerUpgrade.Value);
+                        ApplyCraftingBonuses(item, level);
+                    }
+                }
+            }
+        }
+
         [HarmonyPatch(typeof(ItemDrop.ItemData), nameof(ItemDrop.ItemData.GetTooltip), typeof(ItemDrop.ItemData), typeof(int), typeof(bool), typeof(float), typeof(int))]
         public static class Patch_Tooltip
         {
@@ -1614,13 +1652,18 @@ Blacklist:
                     {
                         if (item.m_quality > lastQuality)
                         {
+                            Debug.Log($"[BlacksmithingExpanded] UPGRADE DETECTED: {item.m_shared.m_name} from quality {lastQuality} to {item.m_quality}");
+
                             GiveBlacksmithingXP(player, cfg_XPPerUpgrade.Value);
 
                             int level = GetPlayerBlacksmithingLevel(player);
+                            Debug.Log($"[BlacksmithingExpanded] Applying upgrade bonuses at level {level}");
+
                             ApplyCraftingBonuses(item, level);
 
-                            Debug.Log($"[BlacksmithingExpanded] Detected upgrade of {item.m_shared.m_name} to quality {item.m_quality}");
                             lastKnownQualities[itemKey] = item.m_quality;
+
+                            Debug.Log($"[BlacksmithingExpanded] Upgrade processing complete for {item.m_shared.m_name}");
                         }
                     }
                     else
@@ -1629,6 +1672,7 @@ Blacklist:
                     }
                 }
 
+                // Cleanup old entries
                 if (Time.time % (UPDATE_INTERVAL * 10f) < UPDATE_INTERVAL)
                 {
                     var keysToRemove = lastKnownQualities.Keys.Where(key => !currentItems.Contains(key)).ToList();
@@ -2127,6 +2171,7 @@ Blacklist:
         private static void CopyBlacksmithingData(BlacksmithingItemData source, BlacksmithingItemData target)
         {
             target.level = source.level;
+            target.lastKnownQuality = source.lastKnownQuality; // Add this line
             target.infusion = source.infusion;
             target.baseDurability = source.baseDurability;
             target.maxDurability = source.maxDurability;
